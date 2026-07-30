@@ -1,0 +1,33 @@
+{
+  "manifestVersion": 1,
+  "generatedAt": "2026-07-30T13:07:40.760828Z",
+  "repository": "git@github.com:happyclaw-agent/chorus.git",
+  "prUrl": "https://github.com/happyclaw-agent/chorus/pull/1",
+  "demoedCommit": "7b5e91fb811fb4d492a37bd77976e07789ac52cc",
+  "kind": "browser",
+  "claims": [
+    "An official OpenTelemetry HTTP exporter sends a GenAI span into the real Chorus OTLP receiver",
+    "Chorus displays the persisted service, model, latency, token-derived metrics, and known cost",
+    "Default manual promotion accepts a generated trace and persists an evaluation case"
+  ],
+  "launchCommands": [
+    "uv run chorus --data-dir /tmp/chorus-pr1-7b5e91f-evidence --host 127.0.0.1 --port 8110"
+  ],
+  "demoCommands": [
+    "official OpenTelemetry SDK plus OTLPSpanExporter to http://127.0.0.1:8110/v1/traces, then browser Promote"
+  ],
+  "isolation": "Dedicated /tmp corpus, synthetic evidence-agent data, localhost only, no production services or message delivery",
+  "limitations": [
+    "Local OTLP HTTP path only; no production deployment or external collector"
+  ],
+  "artifacts": [
+    {
+      "path": "/private/tmp/chorus-pr1-evidence/chorus-otlp-demo.webm",
+      "name": "chorus-otlp-demo.webm",
+      "bytes": 126172,
+      "sha256": "130ff3494c3dab6d8d8a3c1cf9cd3ef0c539c368af827e1524e6e5c5b58d4b4a",
+      "mimeType": "video/webm",
+      "durationSeconds": 2.56
+    }
+  ]
+}
