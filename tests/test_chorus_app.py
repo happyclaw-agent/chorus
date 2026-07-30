@@ -238,6 +238,38 @@ def test_trace_list_uses_bounded_store_query(tmp_path, monkeypatch):
     assert observed_limits == [1]
 
 
+def test_summary_reuses_fingerprinted_projection_until_data_changes(
+    tmp_path, monkeypatch
+):
+    app, reference = _app_with_trace(tmp_path)
+    original_trace_views = app.state.trace_store.trace_views
+    calls = 0
+
+    def traced_views(limit: int | None = None):
+        nonlocal calls
+        calls += 1
+        return original_trace_views(limit=limit)
+
+    monkeypatch.setattr(app.state.trace_store, "trace_views", traced_views)
+    client = TestClient(app)
+
+    assert client.get("/api/summary").status_code == 200
+    assert client.get("/api/summary").status_code == 200
+    assert calls == 1
+
+    feedback = client.post(
+        "/api/feedback",
+        json={
+            "trace_id": reference.trace_id,
+            "kind": "operator_note",
+            "source": "test",
+        },
+    )
+    assert feedback.status_code == 200
+    assert client.get("/api/summary").json()["counts"]["feedback"] == 1
+    assert calls == 2
+
+
 def test_ui_and_generic_server_contain_no_application_specific_copy(tmp_path):
     app = create_app(tmp_path)
     html = TestClient(app).get("/").text

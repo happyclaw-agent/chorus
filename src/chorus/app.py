@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import statistics
+import threading
 import uuid
 from collections import Counter
 from collections.abc import Mapping, Sequence
@@ -87,6 +88,14 @@ def _integer(value: Any) -> int | None:
     if number is None or not number.is_integer():
         return None
     return int(number)
+
+
+def _file_fingerprint(path: Path) -> tuple[int, int, int]:
+    try:
+        stat = path.stat()
+    except FileNotFoundError:
+        return (0, 0, 0)
+    return (stat.st_ino, stat.st_size, stat.st_mtime_ns)
 
 
 def _unique_spans(trace_views: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -191,6 +200,20 @@ def create_app(
     app.state.sidecar_store = sidecars
     app.state.promotion_policy = policy
     app.include_router(create_otlp_router(traces))
+    summary_lock = threading.RLock()
+    summary_cache_key: tuple[tuple[int, int, int], ...] | None = None
+    summary_cache_value: dict[str, Any] | None = None
+
+    def summary_fingerprint() -> tuple[tuple[int, int, int], ...]:
+        return tuple(
+            _file_fingerprint(path)
+            for path in (
+                traces.path,
+                sidecars.path_for("feedback"),
+                sidecars.path_for("eval_cases"),
+                sidecars.path_for("eval_runs"),
+            )
+        )
 
     @app.get("/", include_in_schema=False)
     def index() -> FileResponse:
@@ -207,69 +230,83 @@ def create_app(
 
     @app.get("/api/summary")
     def summary() -> dict[str, Any]:
-        trace_views = traces.trace_views()
-        spans = _unique_spans(trace_views)
-        genai_spans = [
-            span
-            for span in spans
-            if (span.get("attributes") or {}).get("gen_ai.operation.name")
-        ]
-        feedback = sidecars.read("feedback")
-        eval_runs = sidecars.read("eval_runs")
-        latencies = [float(row.get("latency_ms") or 0) for row in trace_views]
-        costs_by_currency: Counter[str] = Counter()
-        priced_calls = 0
-        for span in genai_spans:
-            attributes = span.get("attributes") or {}
-            amount = _number(attributes.get("abbrivio.cost.amount"))
-            if amount is None:
-                continue
-            currency = str(
-                attributes.get("abbrivio.cost.currency") or "unknown"
-            ).upper()
-            costs_by_currency[currency] += amount
-            priced_calls += 1
-        total_tokens = 0
-        for span in genai_spans:
-            attributes = span.get("attributes") or {}
-            total = _integer(attributes.get("abbrivio.usage.total_tokens"))
-            if total is None:
-                input_tokens = _integer(attributes.get("gen_ai.usage.input_tokens"))
-                output_tokens = _integer(attributes.get("gen_ai.usage.output_tokens"))
-                if input_tokens is not None and output_tokens is not None:
-                    total = input_tokens + output_tokens
-            total_tokens += total or 0
-        feedback_by_kind = Counter(
-            str(row.get("kind") or "unknown") for row in feedback
-        )
-        latest_eval = eval_runs[-1] if eval_runs else None
-        return {
-            "counts": {
-                "traces": len({row.get("trace_id") for row in trace_views}),
-                "trace_runs": len(trace_views),
-                "spans": len(spans),
-                "genai_calls": len(genai_spans),
-                "feedback": len(feedback),
-                "eval_cases": len(sidecars.latest("eval_cases", "case_id")),
-                "eval_runs": len(eval_runs),
-            },
-            "latency_ms": {
-                "mean": statistics.fmean(latencies) if latencies else None,
-                "p50": _percentile(latencies, 0.50),
-                "p95": _percentile(latencies, 0.95),
-            },
-            "usage": {"total_tokens": total_tokens},
-            "cost": {
-                "by_currency": {
-                    currency: round(amount, 10)
-                    for currency, amount in sorted(costs_by_currency.items())
+        nonlocal summary_cache_key, summary_cache_value
+        with summary_lock:
+            fingerprint = summary_fingerprint()
+            if fingerprint == summary_cache_key and summary_cache_value is not None:
+                return summary_cache_value
+
+            trace_views = traces.trace_views()
+            spans = _unique_spans(trace_views)
+            genai_spans = [
+                span
+                for span in spans
+                if (span.get("attributes") or {}).get("gen_ai.operation.name")
+            ]
+            feedback = sidecars.read("feedback")
+            eval_runs = sidecars.read("eval_runs")
+            latencies = [float(row.get("latency_ms") or 0) for row in trace_views]
+            costs_by_currency: Counter[str] = Counter()
+            priced_calls = 0
+            for span in genai_spans:
+                attributes = span.get("attributes") or {}
+                amount = _number(attributes.get("abbrivio.cost.amount"))
+                if amount is None:
+                    continue
+                currency = str(
+                    attributes.get("abbrivio.cost.currency") or "unknown"
+                ).upper()
+                costs_by_currency[currency] += amount
+                priced_calls += 1
+            total_tokens = 0
+            for span in genai_spans:
+                attributes = span.get("attributes") or {}
+                total = _integer(attributes.get("abbrivio.usage.total_tokens"))
+                if total is None:
+                    input_tokens = _integer(attributes.get("gen_ai.usage.input_tokens"))
+                    output_tokens = _integer(
+                        attributes.get("gen_ai.usage.output_tokens")
+                    )
+                    if input_tokens is not None and output_tokens is not None:
+                        total = input_tokens + output_tokens
+                total_tokens += total or 0
+            feedback_by_kind = Counter(
+                str(row.get("kind") or "unknown") for row in feedback
+            )
+            latest_eval = eval_runs[-1] if eval_runs else None
+            value = {
+                "counts": {
+                    "traces": len({row.get("trace_id") for row in trace_views}),
+                    "trace_runs": len(trace_views),
+                    "spans": len(spans),
+                    "genai_calls": len(genai_spans),
+                    "feedback": len(feedback),
+                    "eval_cases": len(sidecars.latest("eval_cases", "case_id")),
+                    "eval_runs": len(eval_runs),
                 },
-                "priced_calls": priced_calls,
-                "coverage": (priced_calls / len(genai_spans) if genai_spans else None),
-            },
-            "feedback": {"by_kind": dict(feedback_by_kind)},
-            "latest_eval": latest_eval,
-        }
+                "latency_ms": {
+                    "mean": statistics.fmean(latencies) if latencies else None,
+                    "p50": _percentile(latencies, 0.50),
+                    "p95": _percentile(latencies, 0.95),
+                },
+                "usage": {"total_tokens": total_tokens},
+                "cost": {
+                    "by_currency": {
+                        currency: round(amount, 10)
+                        for currency, amount in sorted(costs_by_currency.items())
+                    },
+                    "priced_calls": priced_calls,
+                    "coverage": (
+                        priced_calls / len(genai_spans) if genai_spans else None
+                    ),
+                },
+                "feedback": {"by_kind": dict(feedback_by_kind)},
+                "latest_eval": latest_eval,
+            }
+            if summary_fingerprint() == fingerprint:
+                summary_cache_key = fingerprint
+                summary_cache_value = value
+            return value
 
     @app.get("/api/traces")
     def trace_list(limit: int = Query(default=100, ge=1, le=1000)) -> dict[str, Any]:
