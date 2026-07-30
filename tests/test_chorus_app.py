@@ -1000,6 +1000,73 @@ def test_root_promotion_prefers_later_root_content_but_explicit_span_keeps_child
     assert child_promotion.json()["actual_output"] == "provider retry draft"
 
 
+def test_explicit_child_without_sidecar_uses_its_otlp_attributes(tmp_path):
+    trace_id = "aa" * 16
+    root_id = "11" * 8
+    child_id = "22" * 8
+    trace_store = OtlpJsonlStore(tmp_path / "traces.otlp.jsonl")
+    exporter = OtlpJsonlSpanExporter(trace_store)
+    AbbrivioCompletionObserver(
+        exporter,
+        app_attributes={
+            "gen_ai.input.messages": "root OTLP input",
+            "gen_ai.output.messages": "root OTLP output",
+        },
+    )(Observation(trace_id=trace_id, span_id=root_id))
+    AbbrivioCompletionObserver(
+        exporter,
+        app_attributes={
+            "gen_ai.input.messages": "child OTLP input",
+            "gen_ai.output.messages": "child OTLP output",
+        },
+    )(
+        Observation(
+            trace_id=trace_id,
+            span_id=child_id,
+            parent_span_id=root_id,
+            started_at="2026-07-30T12:00:01Z",
+        )
+    )
+    app = create_app(tmp_path, trace_store=trace_store)
+    app.state.sidecar_store.append(
+        "content",
+        ContentRecord(
+            schema_version=1,
+            content_id="root-final",
+            recorded_at="2026-07-30T12:00:02Z",
+            trace=TraceRef(
+                trace_id=trace_id,
+                span_id=root_id,
+                root_span_id=root_id,
+            ),
+            input_text="application input",
+            output_text="application final",
+        ).to_dict(),
+    )
+    client = TestClient(app)
+
+    root_promotion = client.post(
+        f"/api/traces/{trace_id}/promote",
+        json={"root_span_id": root_id},
+    )
+    child_promotion = client.post(
+        f"/api/traces/{trace_id}/promote",
+        json={"span_id": child_id, "root_span_id": root_id},
+    )
+
+    assert root_promotion.status_code == 200
+    assert root_promotion.json()["input_text"] == "application input"
+    assert root_promotion.json()["actual_output"] == "application final"
+    assert child_promotion.status_code == 200
+    assert child_promotion.json()["input_text"] == "child OTLP input"
+    assert child_promotion.json()["actual_output"] == "child OTLP output"
+    assert child_promotion.json()["trace"] == {
+        "trace_id": trace_id,
+        "span_id": child_id,
+        "root_span_id": root_id,
+    }
+
+
 def test_promotion_does_not_use_root_linked_content_from_another_run(tmp_path):
     trace_id = "77" * 16
     first_root_id = "11" * 8

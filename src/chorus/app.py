@@ -279,6 +279,11 @@ def _content_for_promotion(
     span_match: dict[str, Any] | None = None
     provisional_root_match: dict[str, Any] | None = None
     trace_match: dict[str, Any] | None = None
+    explicit_non_root_selection = (
+        span_selection_is_explicit
+        and selected_span_id is not None
+        and selected_span_id != root_span_id
+    )
     for record in reversed(records):
         reference = record.get("trace")
         if not isinstance(reference, Mapping):
@@ -298,6 +303,8 @@ def _content_for_promotion(
         )
         if selected_span_match and span_selection_is_explicit:
             return record
+        if explicit_non_root_selection:
+            continue
         root_span_match = root_span_id is not None and referenced_span == root_span_id
         if referenced_span is not None and not (selected_span_match or root_span_match):
             continue
