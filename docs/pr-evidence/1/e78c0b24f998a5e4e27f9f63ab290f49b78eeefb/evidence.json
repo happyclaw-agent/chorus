@@ -1,0 +1,37 @@
+{
+  "manifestVersion": 1,
+  "generatedAt": "2026-07-30T15:57:30Z",
+  "repository": "git@github.com:happyclaw-agent/chorus.git",
+  "prUrl": "https://github.com/happyclaw-agent/chorus/pull/1",
+  "demoedCommit": "e78c0b24f998a5e4e27f9f63ab290f49b78eeefb",
+  "kind": "browser-and-api",
+  "claims": [
+    "The official OpenTelemetry OTLP HTTP exporter sends an ordinary root and GenAI child into the real Chorus receiver",
+    "The public HttpSidecarClient sends trace-linked retained content, explicit feedback, an application-supplied catalog entry, and the result of a real deterministic brevity-and-next-step check",
+    "Chorus displays 87.778 ms P95 root latency, 28 GenAI tokens, USD 0.000420 provider-reported cost, 100 percent price coverage, one feedback record, and the 1-of-1 deterministic evaluation result",
+    "Default root-row promotion selects the GenAI child and persists an evaluation case retaining the observed content and exact OTLP trace, root, and span identifiers",
+    "The canonical OTLP export remains a standard ExportTraceServiceRequest containing both original spans"
+  ],
+  "launchCommands": [
+    "CHORUS_DATA_DIR=/tmp/chorus-pr1-e78c0b2.SS1cEO/data uv run uvicorn chorus.app:create_app --factory --host 127.0.0.1 --port 8116"
+  ],
+  "demoCommands": [
+    "Official OpenTelemetry SDK plus OTLPSpanExporter to http://127.0.0.1:8116/v1/traces, followed by HttpSidecarClient writes and the real browser Promote action",
+    "GET /api/summary, /api/evals, and /api/otlp/traces to verify metrics, deterministic evaluation, promoted provenance, and canonical export"
+  ],
+  "isolation": "Dedicated /tmp corpus, synthetic evidence-agent input and output, localhost only, no production services, customer records, external models, or message delivery",
+  "limitations": [
+    "Local receiver path only; no production deployment or external collector",
+    "The recorded evaluation is one explicitly described deterministic evidence check, not a claim that Robofit's 27-suite DeepEval catalog ran in this standalone demo"
+  ],
+  "artifacts": [
+    {
+      "path": "/Users/happyclaw/worktrees/chorus-otlp-repo/docs/pr-evidence/1/e78c0b24f998a5e4e27f9f63ab290f49b78eeefb/chorus-otlp-sidecar-demo.webm",
+      "name": "chorus-otlp-sidecar-demo.webm",
+      "bytes": 264536,
+      "sha256": "b6870878bd5dce69d91b92cc5201609a2d72a4ee0e2a91bcddc9a74241017ee1",
+      "mimeType": "video/webm",
+      "durationSeconds": 2.8
+    }
+  ]
+}
