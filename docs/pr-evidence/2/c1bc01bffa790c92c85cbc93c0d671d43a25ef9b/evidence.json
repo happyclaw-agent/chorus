@@ -1,0 +1,44 @@
+{
+  "manifestVersion": 1,
+  "generatedAt": "2026-07-30T18:03:14.867618Z",
+  "repository": "git@github.com:happyclaw-agent/chorus.git",
+  "prUrl": "https://github.com/happyclaw-agent/chorus/pull/2",
+  "demoedCommit": "c1bc01bffa790c92c85cbc93c0d671d43a25ef9b",
+  "kind": "terminal",
+  "claims": [
+    "Official OpenTelemetry OTLP/HTTP preserves the root and provider child as two canonical spans",
+    "Default root promotion selects the finalized root-linked application content even when the provider span contains an older draft",
+    "Explicit child promotion remains scoped to the latest selected child content",
+    "Model and application-version provenance still come from the selected OTLP span and resource"
+  ],
+  "launchCommands": [
+    "CHORUS_DATA_DIR=<dedicated-temp-corpus> uv run uvicorn chorus.app:create_app --factory --host 127.0.0.1 --port 8118"
+  ],
+  "demoCommands": [
+    "/tmp/chorus-pr2-demo.sh"
+  ],
+  "isolation": "Dedicated /tmp corpus, synthetic evidence-provider content, localhost only, no production services, customer records, external models, or message delivery",
+  "limitations": [
+    "Local OTLP receiver and promotion API only; no production deployment or external collector"
+  ],
+  "artifacts": [
+    {
+      "path": "/private/tmp/chorus-pr2-evidence-c1bc01b/chorus-root-promotion.cast",
+      "name": "chorus-root-promotion.cast",
+      "bytes": 1121,
+      "sha256": "a3a70308db02a3048428aec64bb1da74ea12e6fa4b53a519dbd77787c2784fc8",
+      "mimeType": "application/octet-stream",
+      "durationSeconds": 2.3763,
+      "outputEvents": 6,
+      "terminalWidth": 80,
+      "terminalHeight": 24
+    },
+    {
+      "path": "/private/tmp/chorus-pr2-evidence-c1bc01b/chorus-root-promotion.svg",
+      "name": "chorus-root-promotion.svg",
+      "bytes": 6525,
+      "sha256": "f20dafd5a7f5a34656f585fe7a8e8ac56ef3af53ea44f3f4ecc3288f98b906a7",
+      "mimeType": "image/svg+xml"
+    }
+  ]
+}
