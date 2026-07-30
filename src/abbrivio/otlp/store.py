@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import threading
@@ -59,9 +60,18 @@ class OtlpJsonlStore:
                 self._ensure_index(connection)
                 with self.path.open("ab") as handle:
                     offset = handle.tell()
-                    handle.write(encoded)
-                    handle.flush()
-                    os.fsync(handle.fileno())
+                    try:
+                        handle.write(encoded)
+                        handle.flush()
+                        os.fsync(handle.fileno())
+                    except BaseException:
+                        try:
+                            handle.truncate(offset)
+                            handle.flush()
+                            os.fsync(handle.fileno())
+                        except OSError:
+                            pass
+                        raise
                 with connection:
                     affected = self._index_request(
                         connection,
@@ -75,8 +85,10 @@ class OtlpJsonlStore:
     def iter_requests(self) -> Iterator[ExportTraceServiceRequest]:
         if not self.path.exists():
             return
-        with self._locked(), self.path.open(encoding="utf-8") as handle:
-            lines = list(handle)
+        with self._locked():
+            self._recover_incomplete_tail()
+            with self.path.open(encoding="utf-8") as handle:
+                lines = list(handle)
         for line_number, line in enumerate(lines, start=1):
             if not line.strip():
                 continue
@@ -229,6 +241,7 @@ class OtlpJsonlStore:
         )
 
     def _ensure_index(self, connection: sqlite3.Connection) -> None:
+        self._recover_incomplete_tail()
         expected = {
             "schema_version": _INDEX_SCHEMA_VERSION,
             **self._canonical_fingerprint(),
@@ -237,6 +250,56 @@ class OtlpJsonlStore:
         if all(metadata.get(key) == value for key, value in expected.items()):
             return
         self._rebuild_index(connection)
+
+    def _recover_incomplete_tail(self) -> None:
+        """Repair the final record left by an interrupted append.
+
+        A complete JSON object can reach durable storage before its delimiter. In
+        that crash window the canonical OTLP record is valid and only needs a
+        newline. An actually partial record is discarded back to the previous
+        delimiter.
+        """
+        if not self.path.exists() or self.path.stat().st_size == 0:
+            return
+        with self.path.open("rb") as handle:
+            handle.seek(-1, os.SEEK_END)
+            if handle.read(1) == b"\n":
+                return
+
+            handle.seek(0, os.SEEK_END)
+            cursor = handle.tell()
+            last_newline = -1
+            while cursor > 0 and last_newline < 0:
+                start = max(0, cursor - 8192)
+                handle.seek(start)
+                chunk = handle.read(cursor - start)
+                relative = chunk.rfind(b"\n")
+                if relative >= 0:
+                    last_newline = start + relative
+                    break
+                cursor = start
+
+            tail_offset = last_newline + 1
+            handle.seek(tail_offset)
+            tail = handle.read()
+
+        try:
+            json.loads(tail)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            with self.path.open("r+b") as handle:
+                handle.truncate(tail_offset)
+                handle.flush()
+                os.fsync(handle.fileno())
+        else:
+            try:
+                with self.path.open("ab") as handle:
+                    handle.write(b"\n")
+                    handle.flush()
+                    os.fsync(handle.fileno())
+            except PermissionError:
+                # A complete final record remains readable without mutating a
+                # deliberately read-only canonical corpus.
+                return
 
     def _rebuild_index(self, connection: sqlite3.Connection) -> None:
         affected: set[str] = set()

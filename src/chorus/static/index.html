@@ -159,7 +159,7 @@
         document.querySelector("#health").textContent = health.ok ? "OTLP receiver ready" : "unavailable";
         document.querySelector("#summary").innerHTML = cards(summary).map(([label, value]) => `<div class="card"><span class="muted">${esc(label)}</span><strong class="value">${esc(value)}</strong></div>`).join("");
         document.querySelector("#traces").innerHTML = renderTraces(traces.traces || []);
-        document.querySelector("#evals").innerHTML = (evals.runs || []).length ? `<table><thead><tr><th>Run</th><th>Model</th><th>Pass</th></tr></thead><tbody>${evals.runs.map(run => `<tr><td>${esc(run.source)}</td><td>${esc(run.model)}</td><td>${run.passed}/${run.total}</td></tr>`).join("")}</tbody></table>` : '<p class="empty">No evaluation runs yet.</p>';
+        document.querySelector("#evals").innerHTML = (evals.runs || []).length ? `<table><thead><tr><th>Run</th><th>Model</th><th>Pass</th></tr></thead><tbody>${evals.runs.map(run => `<tr><td>${esc(run.source)}</td><td>${esc(run.model)}</td><td>${esc(run.passed)}/${esc(run.total)}</td></tr>`).join("")}</tbody></table>` : '<p class="empty">No evaluation runs yet.</p>';
         document.querySelector("#catalog").innerHTML = (evals.catalog || []).length ? `<table><thead><tr><th>Name</th><th>Group</th></tr></thead><tbody>${evals.catalog.map(item => `<tr><td>${esc(item.name)}</td><td>${esc(item.group || "—")}</td></tr>`).join("")}</tbody></table>` : '<p class="empty">No catalog configured.</p>';
       }
 

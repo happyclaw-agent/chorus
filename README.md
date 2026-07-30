@@ -28,8 +28,13 @@ Configure any OpenTelemetry SDK to send OTLP/HTTP to
 `http://127.0.0.1:8010/v1/traces`, then open
 `http://127.0.0.1:8010`.
 
-For a process that cannot share the local filesystem, `HttpSidecarWriter`
-posts generic records to `POST /api/sidecars/{collection}`. Set
+For a process that cannot share the local filesystem, `HttpSidecarClient`
+provides the same `append`, `read`, and `latest` operations as the local
+sidecar store through `POST` and `GET /api/sidecars/{collection}`.
+`HttpSidecarWriter` remains a compatible write-oriented name. Remote reads are
+bounded to the newest 1,000 records; `latest` requests scan the complete
+collection and either return a completeness-confirmed result under 8 MiB or
+fail explicitly. Both paths refuse oversized responses and redirects. Set
 `CHORUS_API_TOKEN` on the server and pass the same bearer token to OTLP and
 sidecar clients when the server is reachable beyond localhost. When configured,
 the token also protects trace, content, feedback, evaluation, export, and
@@ -39,9 +44,9 @@ OTLP; the generic HTTP endpoint transports only the explicitly separate
 sidecars.
 
 ```python
-from abbrivio import HttpSidecarWriter
+from abbrivio import HttpSidecarClient
 
-sidecars = HttpSidecarWriter(
+sidecars = HttpSidecarClient(
     "https://chorus.example",
     bearer_token="replace-with-a-secret",
     timeout=2.0,
@@ -54,6 +59,7 @@ sidecars.append(
         "trace": {"trace_id": "0123456789abcdef0123456789abcdef"},
     },
 )
+latest_feedback = sidecars.latest("feedback", "feedback_id")
 ```
 
 ## Promotion

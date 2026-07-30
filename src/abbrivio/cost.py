@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -42,6 +43,24 @@ class ModelPrice:
     output_per_million: float
     cached_input_per_million: float | None = None
 
+    def __post_init__(self) -> None:
+        for name, value in (
+            ("input_per_million", self.input_per_million),
+            ("output_per_million", self.output_per_million),
+            ("cached_input_per_million", self.cached_input_per_million),
+        ):
+            if value is None and name == "cached_input_per_million":
+                continue
+            if isinstance(value, bool) or not isinstance(value, int | float):
+                raise ValueError(f"{name} must be finite and non-negative")
+            try:
+                normalized = float(value)
+            except (TypeError, ValueError, OverflowError):
+                normalized = math.nan
+            if not math.isfinite(normalized) or normalized < 0:
+                raise ValueError(f"{name} must be finite and non-negative")
+            object.__setattr__(self, name, normalized)
+
 
 def is_versioned_model_alias(*, requested: str | None, returned: str | None) -> bool:
     """Whether a returned model only adds an unambiguous version suffix."""
@@ -73,13 +92,9 @@ class PriceCatalog:
         raw = json.loads(Path(path).expanduser().read_text(encoding="utf-8"))
         models = {
             str(name): ModelPrice(
-                input_per_million=float(values["input_per_million"]),
-                output_per_million=float(values["output_per_million"]),
-                cached_input_per_million=(
-                    float(values["cached_input_per_million"])
-                    if values.get("cached_input_per_million") is not None
-                    else None
-                ),
+                input_per_million=values["input_per_million"],
+                output_per_million=values["output_per_million"],
+                cached_input_per_million=values.get("cached_input_per_million"),
             )
             for name, values in (raw.get("models") or {}).items()
         }

@@ -5,6 +5,7 @@ import gzip
 import json
 import math
 import multiprocessing
+import os
 import threading
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 
@@ -462,6 +463,108 @@ def test_stale_index_rebuilds_after_canonical_append(tmp_path):
     restarted = OtlpJsonlStore(store.path)
     assert restarted.trace_views(limit=1)[0]["trace_id"] == second_trace_id
     assert restarted.get_trace(first_trace_id)["trace_id"] == first_trace_id
+
+
+def test_store_recovers_unterminated_tail_before_rebuild_and_append(tmp_path):
+    store = OtlpJsonlStore(tmp_path / "interrupted.otlp.jsonl")
+    first_trace_id = "61" * 16
+    second_trace_id = "62" * 16
+    store.append(_single_span_request(first_trace_id, "61" * 8, 100))
+    with store.path.open("ab") as handle:
+        handle.write(b'{"resourceSpans": [{"incomplete"')
+
+    restarted = OtlpJsonlStore(store.path)
+    assert [view["trace_id"] for view in restarted.trace_views()] == [first_trace_id]
+    assert restarted.path.read_bytes().endswith(b"\n")
+
+    restarted.append(_single_span_request(second_trace_id, "62" * 8, 200))
+    assert {view["trace_id"] for view in restarted.trace_views()} == {
+        first_trace_id,
+        second_trace_id,
+    }
+
+
+def test_store_reads_complete_read_only_canonical_corpus(tmp_path):
+    store = OtlpJsonlStore(tmp_path / "read-only.otlp.jsonl")
+    trace_id = "69" * 16
+    store.append(_single_span_request(trace_id, "69" * 8, 100))
+    store.path.chmod(0o444)
+
+    try:
+        assert [view["trace_id"] for view in store.trace_views()] == [trace_id]
+        assert len(store.read_requests()) == 1
+    finally:
+        store.path.chmod(0o644)
+
+
+def test_store_reads_complete_unterminated_read_only_corpus(tmp_path):
+    store = OtlpJsonlStore(tmp_path / "read-only-unterminated.otlp.jsonl")
+    trace_id = "6a" * 16
+    store.path.write_text(
+        encode_otlp_json(_single_span_request(trace_id, "6a" * 8, 100)),
+        encoding="utf-8",
+    )
+    original = store.path.read_bytes()
+    store.path.chmod(0o444)
+
+    try:
+        assert [view["trace_id"] for view in store.trace_views()] == [trace_id]
+        assert len(store.read_requests()) == 1
+        assert store.path.read_bytes() == original
+    finally:
+        store.path.chmod(0o644)
+
+
+def test_recovery_preserves_complete_json_with_unknown_otlp_fields(tmp_path):
+    store = OtlpJsonlStore(tmp_path / "future-field.otlp.jsonl")
+    request = json.loads(
+        encode_otlp_json(_single_span_request("6b" * 16, "6b" * 8, 100))
+    )
+    request["futureField"] = {"preserve": True}
+    original = json.dumps(request, separators=(",", ":")).encode()
+    store.path.write_bytes(original)
+
+    with pytest.raises(ValueError, match="invalid OTLP JSONL record"):
+        store.read_requests()
+
+    assert store.path.read_bytes() == original + b"\n"
+
+
+def test_store_preserves_complete_final_record_missing_only_newline(tmp_path):
+    store = OtlpJsonlStore(tmp_path / "missing-delimiter.otlp.jsonl")
+    request = _single_span_request("63" * 16, "63" * 8, 100)
+    canonical_record = encode_otlp_json(request).encode("utf-8")
+    store.path.write_bytes(canonical_record)
+
+    restarted = OtlpJsonlStore(store.path)
+
+    assert restarted.read_requests() == [request]
+    assert restarted.path.read_bytes() == canonical_record + b"\n"
+    assert restarted.get_trace("63" * 16)["trace_id"] == "63" * 16
+
+
+def test_store_rolls_back_canonical_record_when_fsync_fails(tmp_path, monkeypatch):
+    store = OtlpJsonlStore(tmp_path / "failed-write.otlp.jsonl")
+    first_trace_id = "71" * 16
+    second_trace_id = "72" * 16
+    store.append(_single_span_request(first_trace_id, "71" * 8, 100))
+    committed = store.path.read_bytes()
+    original_fsync = os.fsync
+    calls = 0
+
+    def fail_once(file_descriptor):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError("simulated fsync failure")
+        return original_fsync(file_descriptor)
+
+    monkeypatch.setattr("abbrivio.otlp.store.os.fsync", fail_once)
+    with pytest.raises(OSError, match="simulated fsync failure"):
+        store.append(_single_span_request(second_trace_id, "72" * 8, 200))
+
+    assert store.path.read_bytes() == committed
+    assert [view["trace_id"] for view in store.trace_views()] == [first_trace_id]
 
 
 def test_store_serializes_multiple_instances_in_one_process(tmp_path):

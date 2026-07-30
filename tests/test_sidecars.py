@@ -9,7 +9,14 @@ from pathlib import Path
 
 import pytest
 
-from abbrivio.sidecars import ContentRecord, SidecarStore, TraceRef, utc_now
+import abbrivio.sidecars.store as sidecar_store_module
+from abbrivio.sidecars import (
+    ContentRecord,
+    SidecarResponseTooLarge,
+    SidecarStore,
+    TraceRef,
+    utc_now,
+)
 
 
 def _append_sidecars_in_process(
@@ -47,6 +54,46 @@ def test_content_sidecar_joins_by_real_trace_and_span_ids(tmp_path):
 
     assert store.find_content("1" * 32, "2" * 16)["output_text"] == "final"
     assert store.find_content("3" * 32) is None
+
+
+def test_root_linked_content_keeps_distinct_lookup_and_detail_entries(tmp_path):
+    store = SidecarStore(tmp_path)
+    trace_id = "1" * 32
+    first_root = "2" * 16
+    second_root = "3" * 16
+    records = [
+        {
+            "content_id": "first-old",
+            "trace": {"trace_id": trace_id, "root_span_id": first_root},
+        },
+        {
+            "content_id": "second",
+            "trace": {"trace_id": trace_id, "root_span_id": second_root},
+        },
+        {
+            "content_id": "first-new",
+            "trace": {"trace_id": trace_id, "root_span_id": first_root},
+        },
+        {
+            "content_id": "trace-wide",
+            "trace": {"trace_id": trace_id},
+        },
+    ]
+    for record in records:
+        store.append("content", record)
+
+    assert store.find_content(trace_id, root_span_id=first_root)["content_id"] == (
+        "first-new"
+    )
+    assert store.find_content(trace_id, root_span_id=second_root)["content_id"] == (
+        "second"
+    )
+    assert store.find_content(trace_id)["content_id"] == "trace-wide"
+    assert [record["content_id"] for record in store.content_for_trace(trace_id)] == [
+        "first-new",
+        "second",
+        "trace-wide",
+    ]
 
 
 def test_trace_refs_normalize_otlp_ids_to_lowercase():
@@ -99,6 +146,134 @@ def test_sidecar_read_rejects_negative_limit(tmp_path):
 
     with pytest.raises(ValueError, match="non-negative"):
         store.read("feedback", limit=-1)
+    with pytest.raises(TypeError, match="integer"):
+        store.read("feedback", limit=1.5)  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="integer"):
+        store.read("feedback", limit=True)
+
+
+def test_sidecar_limited_read_scans_only_enough_tail_for_valid_objects(
+    tmp_path, monkeypatch
+):
+    store = SidecarStore(tmp_path)
+    path = store.path_for("feedback")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    records = [
+        {"feedback_id": f"feedback-{index}", "payload": "x" * 128}
+        for index in range(1_001)
+    ]
+    path.write_text(
+        "".join(json.dumps(record) + "\n" for record in records),
+        encoding="utf-8",
+    )
+    assert path.stat().st_size > sidecar_store_module._TAIL_READ_CHUNK_BYTES
+    decoded_lines = 0
+    original_loads = sidecar_store_module.json.loads
+
+    def counting_loads(value):
+        nonlocal decoded_lines
+        decoded_lines += 1
+        return original_loads(value)
+
+    monkeypatch.setattr(sidecar_store_module.json, "loads", counting_loads)
+
+    assert store.read("feedback", limit=1) == [records[-1]]
+    assert decoded_lines == 1
+
+
+def test_sidecar_limited_read_returns_newest_valid_objects_in_order(tmp_path):
+    store = SidecarStore(tmp_path)
+    path = store.path_for("feedback")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(
+        b'{"feedback_id":"first"}\n'
+        b"not-json\n"
+        b'{"feedback_id":"second"}\n'
+        b"[]\n"
+        b'{"feedback_id":"third"}'
+    )
+
+    assert store.read("feedback", limit=2) == [
+        {"feedback_id": "second"},
+        {"feedback_id": "third"},
+    ]
+    assert store.read("feedback", limit=0) == []
+
+
+def test_bounded_sidecar_json_stops_decoding_when_newest_slice_exceeds_budget(
+    tmp_path, monkeypatch
+):
+    store = SidecarStore(tmp_path)
+    records = [
+        {"feedback_id": f"feedback-{index}", "payload": "x" * 32}
+        for index in range(100)
+    ]
+    path = store.path_for("feedback")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "".join(json.dumps(record) + "\n" for record in records),
+        encoding="utf-8",
+    )
+    newest_size = len(json.dumps(records[-1], separators=(",", ":")).encode("utf-8"))
+    decoded_lines = 0
+    original_loads = sidecar_store_module.json.loads
+
+    def counting_loads(value):
+        nonlocal decoded_lines
+        decoded_lines += 1
+        return original_loads(value)
+
+    monkeypatch.setattr(sidecar_store_module.json, "loads", counting_loads)
+
+    with pytest.raises(SidecarResponseTooLarge, match="exceeded size limit"):
+        store.read_json_bounded(
+            "feedback",
+            limit=100,
+            max_bytes=2 + newest_size,
+        )
+
+    assert decoded_lines == 2
+
+
+def test_bounded_latest_json_stops_decoding_when_envelope_exceeds_budget(
+    tmp_path, monkeypatch
+):
+    store = SidecarStore(tmp_path)
+    key = "case_id"
+    records = [
+        {"case_id": f"case-{index}", "payload": "x" * 32} for index in range(100)
+    ]
+    path = store.path_for("eval_cases")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "".join(json.dumps(record) + "\n" for record in records),
+        encoding="utf-8",
+    )
+    empty_envelope_size = len(
+        json.dumps(
+            {"complete": True, "latest_by": key, "records": []},
+            separators=(",", ":"),
+        ).encode("utf-8")
+    )
+    newest_size = len(json.dumps(records[-1], separators=(",", ":")).encode("utf-8"))
+    decoded_lines = 0
+    original_loads = sidecar_store_module.json.loads
+
+    def counting_loads(value):
+        nonlocal decoded_lines
+        decoded_lines += 1
+        return original_loads(value)
+
+    monkeypatch.setattr(sidecar_store_module.json, "loads", counting_loads)
+
+    with pytest.raises(SidecarResponseTooLarge, match="exceeded size limit"):
+        store.latest_json_bounded(
+            "eval_cases",
+            key,
+            max_bytes=empty_envelope_size + newest_size,
+        )
+
+    assert decoded_lines == 2
 
 
 def test_sidecar_append_rejects_non_json_records(tmp_path):

@@ -1,6 +1,14 @@
 import json
+import math
 
-from abbrivio.cost import CostEstimate, PriceCatalog, is_versioned_model_alias
+import pytest
+
+from abbrivio.cost import (
+    CostEstimate,
+    ModelPrice,
+    PriceCatalog,
+    is_versioned_model_alias,
+)
 
 
 def test_catalog_prices_cached_and_regular_input_without_double_charging(tmp_path):
@@ -72,3 +80,59 @@ def test_only_unambiguous_version_suffixes_use_requested_model_price():
         requested="model-a", returned="provider-model-b"
     )
     assert not is_versioned_model_alias(requested="gpt-4o", returned="gpt-4o-mini")
+
+
+@pytest.mark.parametrize(
+    "rate",
+    [-1.0, math.nan, math.inf, -math.inf, True, 10**1000],
+)
+def test_model_price_rejects_negative_nonfinite_and_boolean_rates(rate):
+    with pytest.raises(ValueError, match="finite and non-negative"):
+        ModelPrice(input_per_million=rate, output_per_million=1.0)
+
+
+def test_catalog_rejects_invalid_rate_from_file(tmp_path):
+    path = tmp_path / "prices.json"
+    path.write_text(
+        json.dumps(
+            {
+                "version": "invalid",
+                "models": {
+                    "model-a": {
+                        "input_per_million": "NaN",
+                        "output_per_million": 1,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="finite and non-negative"):
+        PriceCatalog.from_file(path)
+
+
+@pytest.mark.parametrize(
+    "rate_name",
+    ["input_per_million", "output_per_million", "cached_input_per_million"],
+)
+def test_catalog_rejects_raw_json_boolean_rates(tmp_path, rate_name):
+    rates = {
+        "input_per_million": 1,
+        "output_per_million": 2,
+        "cached_input_per_million": 0.5,
+    }
+    rates[rate_name] = True
+    path = tmp_path / "prices.json"
+    path.write_text(
+        json.dumps(
+            {
+                "version": "invalid-bool",
+                "models": {"model-a": rates},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="finite and non-negative"):
+        PriceCatalog.from_file(path)

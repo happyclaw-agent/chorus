@@ -33,3 +33,10 @@ def test_ui_reuses_bearer_token_for_protected_quality_api_calls():
     assert 'headers.set("authorization", `Bearer ${token}`)' in html
     assert 'apiFetch("/api/summary")' in html
     assert "await apiFetch(`/api/traces/${traceId}/promote`" in html
+
+
+def test_ui_escapes_all_eval_run_values_before_rendering_html():
+    html = Path(STATIC_INDEX).read_text(encoding="utf-8")
+
+    assert "${esc(run.passed)}/${esc(run.total)}" in html
+    assert "${run.passed}/${run.total}" not in html

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 import subprocess
@@ -9,12 +10,14 @@ import threading
 from dataclasses import dataclass
 
 import httpx
+import pytest
 from fastapi.testclient import TestClient
 
 import chorus.app as chorus_app_module
 from abbrivio import AbbrivioCompletionObserver
 from abbrivio.otlp import OtlpJsonlSpanExporter, OtlpJsonlStore, encode_otlp_json
 from abbrivio.sidecars import (
+    MAX_SIDECAR_READ_LIMIT,
     ContentRecord,
     FeedbackEvent,
     SidecarStore,
@@ -353,6 +356,22 @@ def test_feedback_allows_trace_level_orphan_without_inventing_span_provenance(
     }
 
 
+@pytest.mark.parametrize(
+    "confidence",
+    ["NaN", "Infinity", "-Infinity", -0.01, 1.01],
+)
+def test_feedback_rejects_invalid_confidence_before_persist(tmp_path, confidence):
+    app = create_app(tmp_path)
+
+    response = TestClient(app).post(
+        "/api/feedback",
+        json={"kind": "invalid-confidence", "confidence": confidence},
+    )
+
+    assert response.status_code == 422
+    assert app.state.sidecar_store.read("feedback") == []
+
+
 def test_changed_catalog_definition_is_versioned_and_latest_is_served(tmp_path):
     original = {"name": "example-quality", "threshold": 0.7}
     updated = {"name": "example-quality", "threshold": 0.9}
@@ -385,6 +404,123 @@ def test_generic_sidecar_ingestion_accepts_objects_and_known_collections(tmp_pat
         client.post("/api/sidecars/content", content=b'{"value":NaN}').status_code
         == 422
     )
+
+
+def test_generic_sidecar_reads_are_authenticated_and_bounded(tmp_path):
+    app = create_app(tmp_path, api_token="sidecar-secret")
+    client = TestClient(app)
+    authorization = {"authorization": "Bearer sidecar-secret"}
+    records = [
+        {"case_id": "case-a", "revision": 1},
+        {"case_id": "case-b", "revision": 1},
+        {"case_id": "case-a", "revision": 2},
+    ]
+    for record in records:
+        assert (
+            client.post(
+                "/api/sidecars/eval_cases",
+                json=record,
+                headers=authorization,
+            ).status_code
+            == 200
+        )
+
+    unauthenticated = client.get("/api/sidecars/eval_cases")
+    wrong_token = client.get(
+        "/api/sidecars/eval_cases",
+        headers={"authorization": "Bearer wrong"},
+    )
+    authenticated = client.get(
+        "/api/sidecars/eval_cases?limit=2",
+        headers=authorization,
+    )
+
+    assert unauthenticated.status_code == 401
+    assert unauthenticated.headers["www-authenticate"] == "Bearer"
+    assert wrong_token.status_code == 401
+    assert authenticated.status_code == 200
+    assert authenticated.json() == records[-2:]
+    assert (
+        client.get(
+            "/api/sidecars/eval_cases?limit=0",
+            headers=authorization,
+        ).json()
+        == []
+    )
+    for invalid_limit in ("-1", str(MAX_SIDECAR_READ_LIMIT + 1), "not-an-int"):
+        assert (
+            client.get(
+                f"/api/sidecars/eval_cases?limit={invalid_limit}",
+                headers=authorization,
+            ).status_code
+            == 422
+        )
+    assert (
+        client.get(
+            "/api/sidecars/not-a-collection",
+            headers=authorization,
+        ).status_code
+        == 404
+    )
+
+
+def test_generic_sidecar_read_rejects_response_above_byte_bound(tmp_path, monkeypatch):
+    app = create_app(tmp_path)
+    client = TestClient(app)
+    app.state.sidecar_store.append("eval_cases", {"case_id": "x" * 256})
+    monkeypatch.setattr(chorus_app_module, "MAX_SIDECAR_RESPONSE_BYTES", 64)
+
+    response = client.get("/api/sidecars/eval_cases?limit=1")
+
+    assert response.status_code == 413
+    assert response.json()["detail"] == "sidecar read response exceeded size limit"
+
+
+def test_generic_latest_sidecar_read_is_complete_beyond_regular_window(tmp_path):
+    app = create_app(tmp_path, api_token="sidecar-secret")
+    client = TestClient(app)
+    authorization = {"authorization": "Bearer sidecar-secret"}
+    records = [
+        {"case_id": f"case-{index}", "revision": 1}
+        for index in range(MAX_SIDECAR_READ_LIMIT + 1)
+    ]
+    path = app.state.sidecar_store.path_for("eval_cases")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "".join(json.dumps(record) + "\n" for record in records),
+        encoding="utf-8",
+    )
+
+    regular = client.get("/api/sidecars/eval_cases", headers=authorization)
+    latest = client.get(
+        "/api/sidecars/eval_cases?latest_by=case_id",
+        headers=authorization,
+    )
+
+    assert len(regular.json()) == MAX_SIDECAR_READ_LIMIT
+    assert latest.status_code == 200
+    assert latest.json() == {
+        "complete": True,
+        "latest_by": "case_id",
+        "records": records,
+    }
+
+
+def test_generic_latest_sidecar_read_fails_when_complete_set_exceeds_bound(
+    tmp_path, monkeypatch
+):
+    app = create_app(tmp_path)
+    client = TestClient(app)
+    monkeypatch.setattr(chorus_app_module, "MAX_SIDECAR_RESPONSE_BYTES", 64)
+    app.state.sidecar_store.append(
+        "eval_cases",
+        {"case_id": "case-a", "payload": "x" * 128},
+    )
+
+    response = client.get("/api/sidecars/eval_cases?latest_by=case_id")
+
+    assert response.status_code == 413
+    assert "exceeded size limit" in response.json()["detail"]
 
 
 def test_mutation_bodies_are_authenticated_before_bounded_json_decode(

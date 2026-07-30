@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import secrets
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -23,7 +24,7 @@ from opentelemetry.trace import (
     TraceState,
 )
 
-from abbrivio.cost import PriceCatalog
+from abbrivio.cost import CostEstimate, PriceCatalog
 
 IdValue: TypeAlias = str | int | bytes
 ScalarAttribute: TypeAlias = str | bool | int | float
@@ -182,6 +183,33 @@ def _provider_name(value: Any) -> str:
     return _PROVIDER_NAMES.get(normalized, normalized)
 
 
+def _reported_cost(observation: Any) -> CostEstimate | None:
+    amount = _field(observation, "cost_amount")
+    currency = _field(observation, "cost_currency")
+    source = _field(observation, "cost_source")
+    if (
+        isinstance(amount, bool)
+        or not isinstance(amount, int | float)
+        or not isinstance(currency, str)
+        or not currency.strip()
+        or not isinstance(source, str)
+        or not source.strip()
+    ):
+        return None
+    try:
+        normalized_amount = float(amount)
+    except OverflowError:
+        return None
+    if not math.isfinite(normalized_amount) or normalized_amount < 0:
+        return None
+    return CostEstimate(
+        amount=normalized_amount,
+        currency=currency.strip().upper(),
+        source=source.strip(),
+        coverage="priced",
+    )
+
+
 def _server_attributes(observation: Any) -> dict[str, AttributeValue]:
     address = str(_field(observation, "server_address", "") or "").strip()
     port = _integer(_field(observation, "server_port"))
@@ -222,7 +250,7 @@ class AbbrivioCompletionObserver:
         app_attributes: AppAttributes | None = None,
         identity_resolver: IdentityResolver | None = None,
         instrumentation_name: str = "abbrivio",
-        instrumentation_version: str = "0.1.0",
+        instrumentation_version: str = "0.2.0",
     ) -> None:
         self.exporter = exporter
         self.prices = prices or PriceCatalog.empty()
@@ -342,13 +370,15 @@ class AbbrivioCompletionObserver:
                 if value is not None
             }
         )
-        estimate = self.prices.estimate_completion(
-            requested_model=requested_model,
-            returned_model=returned_model or None,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            cached_input_tokens=cached_input_tokens,
-        )
+        estimate = _reported_cost(observation)
+        if estimate is None:
+            estimate = self.prices.estimate_completion(
+                requested_model=requested_model,
+                returned_model=returned_model or None,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cached_input_tokens=cached_input_tokens,
+            )
         attributes.update(estimate.span_attributes())
         return attributes
 

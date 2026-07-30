@@ -20,12 +20,15 @@ from starlette.concurrency import run_in_threadpool
 from abbrivio.otlp import OtlpJsonlStore, create_otlp_router, encode_otlp_json
 from abbrivio.otlp.receiver import require_bearer_auth
 from abbrivio.sidecars import (
+    MAX_SIDECAR_READ_LIMIT,
     EvaluationCase,
     FeedbackEvent,
+    SidecarResponseTooLarge,
     SidecarStore,
     TraceRef,
     utc_now,
 )
+from abbrivio.sidecars.http import MAX_SIDECAR_RESPONSE_BYTES
 from chorus.extraction import (
     DefaultGenAIExtractionProfile,
     ExtractionProfile,
@@ -63,7 +66,12 @@ class FeedbackRequest(BaseModel):
     source: str = "operator"
     source_event_id: str | None = None
     attribution_method: str = "operator"
-    confidence: float | None = None
+    confidence: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        allow_inf_nan=False,
+    )
     attributes: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -388,7 +396,7 @@ def create_app(
             sidecars.append("eval_catalog", definition)
             existing_catalog[name] = definition
 
-    app = FastAPI(title="Chorus", version="0.1.0")
+    app = FastAPI(title="Chorus", version="0.2.0")
     app.state.trace_store = traces
     app.state.sidecar_store = sidecars
     app.state.promotion_policy = policy
@@ -592,6 +600,45 @@ def create_app(
         except (TypeError, ValueError) as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
         return record
+
+    @app.get("/api/sidecars/{collection}")
+    def read_sidecars(
+        collection: str,
+        limit: int = Query(
+            default=MAX_SIDECAR_READ_LIMIT,
+            ge=0,
+            le=MAX_SIDECAR_READ_LIMIT,
+        ),
+        latest_by: str | None = Query(default=None, min_length=1, max_length=256),
+    ) -> Any:
+        try:
+            sidecars.path_for(collection)
+        except ValueError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        try:
+            if latest_by is not None:
+                response_body = sidecars.latest_json_bounded(
+                    collection,
+                    latest_by,
+                    max_bytes=MAX_SIDECAR_RESPONSE_BYTES,
+                )
+            else:
+                response_body = sidecars.read_json_bounded(
+                    collection,
+                    limit=limit,
+                    max_bytes=MAX_SIDECAR_RESPONSE_BYTES,
+                )
+        except SidecarResponseTooLarge as error:
+            if latest_by is not None:
+                raise HTTPException(
+                    status_code=413,
+                    detail="complete latest sidecar response exceeded size limit",
+                ) from error
+            raise HTTPException(
+                status_code=413,
+                detail="sidecar read response exceeded size limit",
+            ) from error
+        return Response(content=response_body, media_type="application/json")
 
     @app.post("/api/traces/{trace_id}/promote")
     def promote(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, replace
 
 import pytest
@@ -61,6 +62,9 @@ class Observation:
     trace_id: str | None = None
     span_id: str | None = None
     parent_span_id: str | None = None
+    cost_amount: float | None = None
+    cost_currency: str | None = None
+    cost_source: str | None = None
 
 
 def _catalog() -> PriceCatalog:
@@ -158,6 +162,76 @@ def test_error_observation_uses_standard_status_error_and_http_attributes():
     assert span.attributes["abbrivio.cost.coverage"] == "missing_usage"
     assert "abbrivio.cost.amount" not in span.attributes
     assert "gen_ai.response.model" not in span.attributes
+
+
+def test_provider_reported_cost_takes_precedence_over_catalog_estimate():
+    exporter = RecordingExporter()
+    observer = AbbrivioCompletionObserver(exporter, prices=_catalog())
+
+    observer(
+        replace(
+            Observation(),
+            cost_amount=0.00042,
+            cost_currency=" usd ",
+            cost_source=" provider_response ",
+        )
+    )
+
+    attributes = exporter.spans[0].attributes
+    assert attributes["abbrivio.cost.amount"] == 0.00042
+    assert attributes["abbrivio.cost.currency"] == "USD"
+    assert attributes["abbrivio.cost.source"] == "provider_response"
+    assert attributes["abbrivio.cost.coverage"] == "priced"
+    assert "abbrivio.cost.catalog.version" not in attributes
+
+
+def test_zero_provider_reported_cost_is_a_valid_priced_observation():
+    exporter = RecordingExporter()
+    observer = AbbrivioCompletionObserver(exporter, prices=_catalog())
+
+    observer(
+        replace(
+            Observation(),
+            cost_amount=0,
+            cost_currency="USD",
+            cost_source="provider_response",
+        )
+    )
+
+    attributes = exporter.spans[0].attributes
+    assert attributes["abbrivio.cost.amount"] == 0.0
+    assert attributes["abbrivio.cost.source"] == "provider_response"
+
+
+@pytest.mark.parametrize(
+    ("amount", "currency", "source"),
+    [
+        (math.nan, "USD", "provider_response"),
+        (math.inf, "USD", "provider_response"),
+        (-0.01, "USD", "provider_response"),
+        (True, "USD", "provider_response"),
+        ("0.01", "USD", "provider_response"),
+        (0.01, "", "provider_response"),
+        (0.01, "USD", ""),
+    ],
+)
+def test_invalid_reported_cost_falls_back_to_catalog(amount, currency, source):
+    exporter = RecordingExporter()
+    observer = AbbrivioCompletionObserver(exporter, prices=_catalog())
+
+    observer(
+        replace(
+            Observation(),
+            cost_amount=amount,
+            cost_currency=currency,
+            cost_source=source,
+        )
+    )
+
+    attributes = exporter.spans[0].attributes
+    assert attributes["abbrivio.cost.amount"] == 0.0038
+    assert attributes["abbrivio.cost.source"] == "price_catalog"
+    assert attributes["abbrivio.cost.catalog.version"] == "2026-07-30"
 
 
 def test_same_interaction_gets_valid_shared_fallback_trace_and_unique_spans():

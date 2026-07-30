@@ -21,6 +21,30 @@ class AllowAllPromotionPolicy:
         return PromotionDecision(allowed=True)
 
 
+def _same_policy_value(actual: Any, expected: Any) -> bool:
+    """Compare JSON-like values without Python's bool/number coercion."""
+    if isinstance(actual, bool) or isinstance(expected, bool):
+        return type(actual) is type(expected) and actual == expected
+    if isinstance(actual, dict) or isinstance(expected, dict):
+        return (
+            isinstance(actual, dict)
+            and isinstance(expected, dict)
+            and actual.keys() == expected.keys()
+            and all(_same_policy_value(actual[key], expected[key]) for key in actual)
+        )
+    if isinstance(actual, list) or isinstance(expected, list):
+        return (
+            isinstance(actual, list)
+            and isinstance(expected, list)
+            and len(actual) == len(expected)
+            and all(
+                _same_policy_value(actual_item, expected_item)
+                for actual_item, expected_item in zip(actual, expected, strict=True)
+            )
+        )
+    return actual == expected
+
+
 def _resolve_path(value: Any, path: str) -> tuple[bool, Any]:
     current = value
     parts = path.split(".")
@@ -64,10 +88,10 @@ class AttributeRule:
         if not exists:
             return False
         if self.operator == "eq":
-            return actual == self.value
+            return _same_policy_value(actual, self.value)
         if self.operator == "in":
-            return actual in self.value
-        return actual not in self.value
+            return any(_same_policy_value(actual, expected) for expected in self.value)
+        return not any(_same_policy_value(actual, expected) for expected in self.value)
 
 
 class AttributePromotionPolicy:
