@@ -141,6 +141,18 @@ def test_sidecar_read_with_zero_limit_is_empty(tmp_path):
     assert store.read("feedback", limit=0) == []
 
 
+def test_deduplicated_keeps_unkeyed_records_and_latest_keyed_value(tmp_path):
+    store = SidecarStore(tmp_path)
+    store.append("feedback", {"feedback_id": "delivery", "value": "sent"})
+    store.append("feedback", {"kind": "operator_note", "value": "keep me"})
+    store.append("feedback", {"feedback_id": "delivery", "value": "delivered"})
+
+    assert store.deduplicated("feedback", "feedback_id") == [
+        {"kind": "operator_note", "value": "keep me"},
+        {"feedback_id": "delivery", "value": "delivered"},
+    ]
+
+
 def test_sidecar_read_rejects_negative_limit(tmp_path):
     store = SidecarStore(tmp_path)
 

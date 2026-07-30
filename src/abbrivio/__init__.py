@@ -22,7 +22,7 @@ from abbrivio.sidecars import (
     utc_now,
 )
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 CONTRACT_VERSION = "1"
 
 __all__ = [

@@ -271,11 +271,19 @@ def _content_for_promotion(
     *,
     trace_id: str,
     selected_span_id: str | None,
+    span_selection_is_explicit: bool,
     root_span_id: str | None,
     span_ids: set[str],
 ) -> dict[str, Any] | None:
     root_match: dict[str, Any] | None = None
+    span_match: dict[str, Any] | None = None
+    provisional_root_match: dict[str, Any] | None = None
     trace_match: dict[str, Any] | None = None
+    explicit_non_root_selection = (
+        span_selection_is_explicit
+        and selected_span_id is not None
+        and selected_span_id != root_span_id
+    )
     for record in reversed(records):
         reference = record.get("trace")
         if not isinstance(reference, Mapping):
@@ -290,15 +298,34 @@ def _content_for_promotion(
             continue
         referenced_span = str(reference.get("span_id") or "").lower() or None
         referenced_root = str(reference.get("root_span_id") or "").lower() or None
-        if selected_span_id is not None and referenced_span == selected_span_id:
+        selected_span_match = (
+            selected_span_id is not None and referenced_span == selected_span_id
+        )
+        if selected_span_match and span_selection_is_explicit:
             return record
-        if referenced_span is not None:
+        if explicit_non_root_selection:
             continue
-        if referenced_root is not None and root_match is None:
-            root_match = record
-        elif referenced_root is None and trace_match is None:
+        root_span_match = root_span_id is not None and referenced_span == root_span_id
+        if referenced_span is not None and not (selected_span_match or root_span_match):
+            continue
+        direct_root_match = root_span_match or (
+            referenced_span is None and referenced_root == root_span_id
+        )
+        if direct_root_match:
+            if root_match is None:
+                root_match = record
+            continue
+        if selected_span_match:
+            if span_match is None:
+                span_match = record
+            continue
+        if referenced_root is not None:
+            if provisional_root_match is None:
+                provisional_root_match = record
+            continue
+        if trace_match is None:
             trace_match = record
-    return root_match or trace_match
+    return root_match or span_match or provisional_root_match or trace_match
 
 
 def _content_for_root(
@@ -397,7 +424,7 @@ def create_app(
             sidecars.append("eval_catalog", definition)
             existing_catalog[name] = definition
 
-    app = FastAPI(title="Chorus", version="0.2.0")
+    app = FastAPI(title="Chorus", version="0.2.1")
     app.state.trace_store = traces
     app.state.sidecar_store = sidecars
     app.state.promotion_policy = policy
@@ -460,7 +487,7 @@ def create_app(
                 for span in spans
                 if (span.get("attributes") or {}).get("gen_ai.operation.name")
             ]
-            feedback = sidecars.read("feedback")
+            feedback = sidecars.deduplicated("feedback", "feedback_id")
             eval_runs = sidecars.read("eval_runs")
             latencies = [float(row.get("latency_ms") or 0) for row in trace_views]
             costs_by_currency: Counter[str] = Counter()
@@ -528,7 +555,9 @@ def create_app(
     @app.get("/api/traces")
     def trace_list(limit: int = Query(default=100, ge=1, le=1000)) -> dict[str, Any]:
         content_by_trace = _sidecars_by_trace(sidecars.read("content"))
-        feedback_by_trace = _sidecars_by_trace(sidecars.read("feedback"))
+        feedback_by_trace = _sidecars_by_trace(
+            sidecars.deduplicated("feedback", "feedback_id")
+        )
         rows = []
         for trace in traces.trace_views(limit=limit):
             trace_id = str(trace["trace_id"]).lower()
@@ -689,6 +718,7 @@ def create_app(
             sidecars.read("content"),
             trace_id=trace_id.lower(),
             selected_span_id=selected_span_id,
+            span_selection_is_explicit=requested_span_id is not None,
             root_span_id=selected_root_id,
             span_ids=subtree_span_ids,
         )

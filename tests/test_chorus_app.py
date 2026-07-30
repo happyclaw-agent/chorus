@@ -103,6 +103,56 @@ def test_generic_dashboard_reads_otlp_and_default_promotion_allows_any_state(tmp
     assert promoted.json()["trace"]["trace_id"] == reference.trace_id
 
 
+def test_feedback_views_deduplicate_retried_event_ids(tmp_path):
+    app, reference = _app_with_trace(tmp_path)
+    sidecars = app.state.sidecar_store
+    for status in ("sent", "delivered"):
+        sidecars.append(
+            "feedback",
+            FeedbackEvent(
+                schema_version=1,
+                feedback_id="delivery-event",
+                occurred_at=utc_now(),
+                kind="delivery_status",
+                value=status,
+                source="example.delivery",
+                trace=TraceRef(
+                    trace_id=reference.trace_id,
+                    span_id=reference.span_id,
+                    root_span_id=reference.span_id,
+                ),
+            ).to_dict(),
+        )
+    sidecars.append(
+        "feedback",
+        {
+            "schema_version": 1,
+            "kind": "operator_note",
+            "value": "unkeyed feedback remains visible",
+            "trace": {
+                "trace_id": reference.trace_id,
+                "span_id": reference.span_id,
+                "root_span_id": reference.span_id,
+            },
+        },
+    )
+    client = TestClient(app)
+
+    summary = client.get("/api/summary").json()
+    traces = client.get("/api/traces").json()["traces"]
+    detail = client.get(f"/api/traces/{reference.trace_id}").json()
+
+    assert summary["counts"]["feedback"] == 2
+    assert summary["feedback"]["by_kind"] == {
+        "delivery_status": 1,
+        "operator_note": 1,
+    }
+    assert traces[0]["feedback_count"] == 2
+    assert len(detail["feedback"]) == 2
+    assert detail["feedback"][0]["value"] == "delivered"
+    assert detail["feedback"][1]["kind"] == "operator_note"
+
+
 def test_missing_content_is_extraction_error_and_explicit_values_fix_it(tmp_path):
     trace_store = OtlpJsonlStore(tmp_path / "traces.otlp.jsonl")
     reference = AbbrivioCompletionObserver(OtlpJsonlSpanExporter(trace_store))(
@@ -858,6 +908,162 @@ def test_root_only_promotion_selects_genai_descendant_within_that_root(tmp_path)
         "trace_id": first_root.trace_id,
         "span_id": child_id,
         "root_span_id": first_root.span_id,
+    }
+
+
+def test_root_promotion_prefers_later_root_content_but_explicit_span_keeps_child(
+    tmp_path,
+):
+    trace_id = "99" * 16
+    root_id = "11" * 8
+    child_id = "22" * 8
+    trace_store = OtlpJsonlStore(tmp_path / "traces.otlp.jsonl")
+    observer = AbbrivioCompletionObserver(OtlpJsonlSpanExporter(trace_store))
+    observer(Observation(trace_id=trace_id, span_id=root_id))
+    AbbrivioCompletionObserver(
+        OtlpJsonlSpanExporter(trace_store),
+        app_attributes={
+            "gen_ai.input.messages": "provider span input",
+            "gen_ai.output.messages": "provider span draft",
+        },
+    )(
+        Observation(
+            trace_id=trace_id,
+            span_id=child_id,
+            parent_span_id=root_id,
+            started_at="2026-07-30T12:00:01Z",
+        )
+    )
+    app = create_app(tmp_path, trace_store=trace_store)
+    sidecars = app.state.sidecar_store
+    sidecars.append(
+        "content",
+        ContentRecord(
+            schema_version=1,
+            content_id="turn-content",
+            recorded_at="2026-07-30T12:00:02Z",
+            trace=TraceRef(
+                trace_id=trace_id,
+                span_id=child_id,
+                root_span_id=root_id,
+            ),
+            input_text="provider input",
+            output_text="provider draft",
+        ).to_dict(),
+    )
+    sidecars.append(
+        "content",
+        ContentRecord(
+            schema_version=1,
+            content_id="turn-content",
+            recorded_at="2026-07-30T12:00:03Z",
+            trace=TraceRef(
+                trace_id=trace_id,
+                span_id=root_id,
+                root_span_id=root_id,
+            ),
+            input_text="application input",
+            output_text="application final",
+        ).to_dict(),
+    )
+    sidecars.append(
+        "content",
+        ContentRecord(
+            schema_version=1,
+            content_id="turn-content",
+            recorded_at="2026-07-30T12:00:02.500000Z",
+            trace=TraceRef(
+                trace_id=trace_id,
+                span_id=child_id,
+                root_span_id=root_id,
+            ),
+            input_text="provider retry input",
+            output_text="provider retry draft",
+        ).to_dict(),
+    )
+    client = TestClient(app)
+
+    root_promotion = client.post(
+        f"/api/traces/{trace_id}/promote",
+        json={"root_span_id": root_id},
+    )
+    child_promotion = client.post(
+        f"/api/traces/{trace_id}/promote",
+        json={"span_id": child_id, "root_span_id": root_id},
+    )
+
+    assert root_promotion.status_code == 200
+    assert root_promotion.json()["input_text"] == "application input"
+    assert root_promotion.json()["actual_output"] == "application final"
+    assert child_promotion.status_code == 200
+    assert child_promotion.json()["input_text"] == "provider retry input"
+    assert child_promotion.json()["actual_output"] == "provider retry draft"
+
+
+def test_explicit_child_without_sidecar_uses_its_otlp_attributes(tmp_path):
+    trace_id = "aa" * 16
+    root_id = "11" * 8
+    child_id = "22" * 8
+    trace_store = OtlpJsonlStore(tmp_path / "traces.otlp.jsonl")
+    exporter = OtlpJsonlSpanExporter(trace_store)
+    AbbrivioCompletionObserver(
+        exporter,
+        app_attributes={
+            "gen_ai.input.messages": "root OTLP input",
+            "gen_ai.output.messages": "root OTLP output",
+        },
+    )(Observation(trace_id=trace_id, span_id=root_id))
+    AbbrivioCompletionObserver(
+        exporter,
+        app_attributes={
+            "gen_ai.input.messages": "child OTLP input",
+            "gen_ai.output.messages": "child OTLP output",
+        },
+    )(
+        Observation(
+            trace_id=trace_id,
+            span_id=child_id,
+            parent_span_id=root_id,
+            started_at="2026-07-30T12:00:01Z",
+        )
+    )
+    app = create_app(tmp_path, trace_store=trace_store)
+    app.state.sidecar_store.append(
+        "content",
+        ContentRecord(
+            schema_version=1,
+            content_id="root-final",
+            recorded_at="2026-07-30T12:00:02Z",
+            trace=TraceRef(
+                trace_id=trace_id,
+                span_id=root_id,
+                root_span_id=root_id,
+            ),
+            input_text="application input",
+            output_text="application final",
+        ).to_dict(),
+    )
+    client = TestClient(app)
+
+    root_promotion = client.post(
+        f"/api/traces/{trace_id}/promote",
+        json={"root_span_id": root_id},
+    )
+    child_promotion = client.post(
+        f"/api/traces/{trace_id}/promote",
+        json={"span_id": child_id, "root_span_id": root_id},
+    )
+
+    assert root_promotion.status_code == 200
+    assert root_promotion.json()["input_text"] == "application input"
+    assert root_promotion.json()["actual_output"] == "application final"
+    assert child_promotion.status_code == 200
+    assert child_promotion.json()["input_text"] == "child OTLP input"
+    assert child_promotion.json()["actual_output"] == "child OTLP output"
+    assert child_promotion.json()["trace"] == {
+        "trace_id": trace_id,
+        "span_id": child_id,
+        "root_span_id": root_id,
     }
 
 

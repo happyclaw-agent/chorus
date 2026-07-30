@@ -268,7 +268,7 @@ class AbbrivioCompletionObserver:
         app_attributes: AppAttributes | None = None,
         identity_resolver: IdentityResolver | None = None,
         instrumentation_name: str = "abbrivio",
-        instrumentation_version: str = "0.2.0",
+        instrumentation_version: str = "0.2.1",
     ) -> None:
         self.exporter = exporter
         self.prices = prices or PriceCatalog.empty()
