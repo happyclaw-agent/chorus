@@ -450,7 +450,7 @@ class SidecarStore:
     def feedback_for_trace(self, trace_id: str) -> list[dict[str, Any]]:
         return [
             record
-            for record in self.read("feedback")
+            for record in self.latest("feedback", "feedback_id")
             if isinstance(record.get("trace"), dict)
             and record["trace"].get("trace_id") == trace_id
         ]

@@ -103,6 +103,39 @@ def test_generic_dashboard_reads_otlp_and_default_promotion_allows_any_state(tmp
     assert promoted.json()["trace"]["trace_id"] == reference.trace_id
 
 
+def test_feedback_views_deduplicate_retried_event_ids(tmp_path):
+    app, reference = _app_with_trace(tmp_path)
+    sidecars = app.state.sidecar_store
+    for status in ("sent", "delivered"):
+        sidecars.append(
+            "feedback",
+            FeedbackEvent(
+                schema_version=1,
+                feedback_id="delivery-event",
+                occurred_at=utc_now(),
+                kind="delivery_status",
+                value=status,
+                source="example.delivery",
+                trace=TraceRef(
+                    trace_id=reference.trace_id,
+                    span_id=reference.span_id,
+                    root_span_id=reference.span_id,
+                ),
+            ).to_dict(),
+        )
+    client = TestClient(app)
+
+    summary = client.get("/api/summary").json()
+    traces = client.get("/api/traces").json()["traces"]
+    detail = client.get(f"/api/traces/{reference.trace_id}").json()
+
+    assert summary["counts"]["feedback"] == 1
+    assert summary["feedback"]["by_kind"] == {"delivery_status": 1}
+    assert traces[0]["feedback_count"] == 1
+    assert len(detail["feedback"]) == 1
+    assert detail["feedback"][0]["value"] == "delivered"
+
+
 def test_missing_content_is_extraction_error_and_explicit_values_fix_it(tmp_path):
     trace_store = OtlpJsonlStore(tmp_path / "traces.otlp.jsonl")
     reference = AbbrivioCompletionObserver(OtlpJsonlSpanExporter(trace_store))(

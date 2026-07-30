@@ -480,7 +480,7 @@ def create_app(
                 for span in spans
                 if (span.get("attributes") or {}).get("gen_ai.operation.name")
             ]
-            feedback = sidecars.read("feedback")
+            feedback = sidecars.latest("feedback", "feedback_id")
             eval_runs = sidecars.read("eval_runs")
             latencies = [float(row.get("latency_ms") or 0) for row in trace_views]
             costs_by_currency: Counter[str] = Counter()
@@ -548,7 +548,9 @@ def create_app(
     @app.get("/api/traces")
     def trace_list(limit: int = Query(default=100, ge=1, le=1000)) -> dict[str, Any]:
         content_by_trace = _sidecars_by_trace(sidecars.read("content"))
-        feedback_by_trace = _sidecars_by_trace(sidecars.read("feedback"))
+        feedback_by_trace = _sidecars_by_trace(
+            sidecars.latest("feedback", "feedback_id")
+        )
         rows = []
         for trace in traces.trace_views(limit=limit):
             trace_id = str(trace["trace_id"]).lower()
