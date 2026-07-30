@@ -81,12 +81,17 @@
     <script>
       const esc = (value) => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
       const compact = (value, size = 12) => value ? `${String(value).slice(0, size)}…` : "—";
-      const formatCost = (value) => value == null ? "unknown" : `$${Number(value).toFixed(6)}`;
+      const formatCost = (values) => {
+        const entries = Object.entries(values || {});
+        if (!entries.length) return "unknown";
+        if (entries.length > 1) return `${entries.length} currencies`;
+        return `${entries[0][0]} ${Number(entries[0][1]).toFixed(6)}`;
+      };
       const cards = (summary) => [
         ["Trace runs", summary.counts.trace_runs],
         ["Spans", summary.counts.spans],
         ["P95 latency", summary.latency_ms.p95 == null ? "—" : `${summary.latency_ms.p95} ms`],
-        ["Known cost", formatCost(summary.cost.known_usd)],
+        ["Known cost", formatCost(summary.cost.by_currency)],
         ["Feedback", summary.counts.feedback],
         ["Eval cases", summary.counts.eval_cases],
       ];

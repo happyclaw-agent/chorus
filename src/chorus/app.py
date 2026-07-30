@@ -196,16 +196,18 @@ def create_app(
         feedback = sidecars.read("feedback")
         eval_runs = sidecars.read("eval_runs")
         latencies = [float(row.get("latency_ms") or 0) for row in trace_views]
-        costs = [
-            amount
-            for span in genai_spans
-            if (
-                amount := _number(
-                    (span.get("attributes") or {}).get("abbrivio.cost.amount")
-                )
-            )
-            is not None
-        ]
+        costs_by_currency: Counter[str] = Counter()
+        priced_calls = 0
+        for span in genai_spans:
+            attributes = span.get("attributes") or {}
+            amount = _number(attributes.get("abbrivio.cost.amount"))
+            if amount is None:
+                continue
+            currency = str(
+                attributes.get("abbrivio.cost.currency") or "unknown"
+            ).upper()
+            costs_by_currency[currency] += amount
+            priced_calls += 1
         total_tokens = 0
         for span in genai_spans:
             attributes = span.get("attributes") or {}
@@ -237,9 +239,12 @@ def create_app(
             },
             "usage": {"total_tokens": total_tokens},
             "cost": {
-                "known_usd": round(sum(costs), 10) if costs else None,
-                "priced_calls": len(costs),
-                "coverage": len(costs) / len(genai_spans) if genai_spans else None,
+                "by_currency": {
+                    currency: round(amount, 10)
+                    for currency, amount in sorted(costs_by_currency.items())
+                },
+                "priced_calls": priced_calls,
+                "coverage": (priced_calls / len(genai_spans) if genai_spans else None),
             },
             "feedback": {"by_kind": dict(feedback_by_kind)},
             "latest_eval": latest_eval,

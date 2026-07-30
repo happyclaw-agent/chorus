@@ -37,7 +37,30 @@ def _copy_request(value: TraceData) -> ExportTraceServiceRequest:
         request.resource_spans.extend(value.resource_spans)
     else:  # pragma: no cover - kept defensive for callers bypassing typing
         raise TypeError("expected ExportTraceServiceRequest or TracesData")
+    _validate_request_ids(request)
     return request
+
+
+def _validate_id(value: bytes, *, byte_width: int, field: str) -> None:
+    if len(value) != byte_width or int.from_bytes(value, "big") == 0:
+        raise ValueError(f"{field} must be a non-zero {byte_width}-byte identifier")
+
+
+def _validate_request_ids(request: ExportTraceServiceRequest) -> None:
+    for resource_spans in request.resource_spans:
+        for scope_spans in resource_spans.scope_spans:
+            for span in scope_spans.spans:
+                _validate_id(span.trace_id, byte_width=16, field="traceId")
+                _validate_id(span.span_id, byte_width=8, field="spanId")
+                if span.parent_span_id:
+                    _validate_id(
+                        span.parent_span_id,
+                        byte_width=8,
+                        field="parentSpanId",
+                    )
+                for link in span.links:
+                    _validate_id(link.trace_id, byte_width=16, field="link.traceId")
+                    _validate_id(link.span_id, byte_width=8, field="link.spanId")
 
 
 def _base64_id_to_hex(value: str, *, byte_width: int, hex_width: int) -> str:
@@ -141,6 +164,7 @@ def decode_otlp_json(
         request,
         ignore_unknown_fields=False,
     )
+    _validate_request_ids(request)
     return request
 
 
@@ -151,4 +175,5 @@ def encode_otlp_protobuf(value: TraceData) -> bytes:
 def decode_otlp_protobuf(value: bytes) -> ExportTraceServiceRequest:
     request = ExportTraceServiceRequest()
     request.ParseFromString(value)
+    _validate_request_ids(request)
     return request

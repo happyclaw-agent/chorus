@@ -19,10 +19,13 @@ class TraceRef:
 
     def __post_init__(self) -> None:
         _validate_hex_id("trace_id", self.trace_id, 32)
+        object.__setattr__(self, "trace_id", self.trace_id.lower())
         if self.span_id is not None:
             _validate_hex_id("span_id", self.span_id, 16)
+            object.__setattr__(self, "span_id", self.span_id.lower())
         if self.root_span_id is not None:
             _validate_hex_id("root_span_id", self.root_span_id, 16)
+            object.__setattr__(self, "root_span_id", self.root_span_id.lower())
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

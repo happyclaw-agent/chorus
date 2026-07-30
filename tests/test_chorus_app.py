@@ -45,6 +45,7 @@ def _app_with_trace(tmp_path, *, policy=None, catalog=None):
         app_attributes={
             "gen_ai.input.messages": '[{"role":"user","content":"Help me"}]',
             "gen_ai.output.messages": '[{"role":"assistant","content":"One step"}]',
+            "abbrivio.cost.amount": 0.00042,
             "example.lifecycle": "generated",
         },
     )
@@ -72,6 +73,7 @@ def test_generic_dashboard_reads_otlp_and_default_promotion_allows_any_state(tmp
     assert summary["counts"]["genai_calls"] == 1
     assert summary["usage"]["total_tokens"] == 125
     assert summary["latency_ms"]["p95"] == 250
+    assert summary["cost"]["by_currency"] == {"USD": 0.00042}
 
     promoted = client.post(
         f"/api/traces/{reference.trace_id}/promote",

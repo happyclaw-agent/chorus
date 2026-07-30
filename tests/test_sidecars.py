@@ -24,6 +24,13 @@ def test_content_sidecar_joins_by_real_trace_and_span_ids(tmp_path):
     assert store.find_content("3" * 32) is None
 
 
+def test_trace_refs_normalize_otlp_ids_to_lowercase():
+    reference = TraceRef(trace_id="AB" * 16, span_id="CD" * 8)
+
+    assert reference.trace_id == "ab" * 16
+    assert reference.span_id == "cd" * 8
+
+
 def test_sidecar_store_does_not_filter_application_lifecycle_values(tmp_path):
     store = SidecarStore(tmp_path)
     for index, status in enumerate(

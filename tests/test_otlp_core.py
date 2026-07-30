@@ -3,6 +3,7 @@ from __future__ import annotations
 import gzip
 import json
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
@@ -168,6 +169,21 @@ def test_otlp_json_and_protobuf_round_trip_preserve_complete_messages():
 
     assert decode_otlp_json(encoded) == original
     assert decode_otlp_protobuf(encode_otlp_protobuf(original)) == original
+
+
+def test_codecs_reject_zero_or_wrong_width_trace_identifiers():
+    request = _complete_request()
+    request.resource_spans[0].scope_spans[0].spans[0].trace_id = bytes(16)
+
+    with pytest.raises(ValueError, match="traceId"):
+        encode_otlp_json(request)
+    with pytest.raises(ValueError, match="traceId"):
+        decode_otlp_protobuf(request.SerializeToString())
+
+    document = json.loads(encode_otlp_json(_complete_request()))
+    document["resourceSpans"][0]["scopeSpans"][0]["spans"][0]["spanId"] = "01"
+    with pytest.raises(ValueError, match="span"):
+        decode_otlp_json(document)
 
 
 def test_store_writes_canonical_otlp_jsonl_and_projects_every_trace(tmp_path):
