@@ -6,6 +6,7 @@ import json
 import math
 import multiprocessing
 import os
+import sqlite3
 import threading
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 
@@ -463,6 +464,79 @@ def test_stale_index_rebuilds_after_canonical_append(tmp_path):
     restarted = OtlpJsonlStore(store.path)
     assert restarted.trace_views(limit=1)[0]["trace_id"] == second_trace_id
     assert restarted.get_trace(first_trace_id)["trace_id"] == first_trace_id
+
+
+def test_truncated_disposable_index_rebuilds_for_reads(tmp_path):
+    store = OtlpJsonlStore(tmp_path / "corrupt-read-index.otlp.jsonl")
+    trace_id = "56" * 16
+    store.append(_single_span_request(trace_id, "56" * 8, 100))
+    canonical = store.path.read_bytes()
+    store.index_path.write_bytes(store.index_path.read_bytes()[:64])
+
+    restarted = OtlpJsonlStore(store.path)
+
+    assert restarted.get_trace(trace_id)["trace_id"] == trace_id
+    assert [view["trace_id"] for view in restarted.trace_views()] == [trace_id]
+    assert restarted.path.read_bytes() == canonical
+
+
+def test_truncated_disposable_index_rebuilds_before_append(tmp_path):
+    store = OtlpJsonlStore(tmp_path / "corrupt-append-index.otlp.jsonl")
+    first_trace_id = "57" * 16
+    second_trace_id = "58" * 16
+    store.append(_single_span_request(first_trace_id, "57" * 8, 100))
+    store.index_path.write_bytes(store.index_path.read_bytes()[:64])
+
+    restarted = OtlpJsonlStore(store.path)
+    restarted.append(_single_span_request(second_trace_id, "58" * 8, 200))
+
+    assert len(restarted.read_requests()) == 2
+    assert {view["trace_id"] for view in restarted.trace_views()} == {
+        first_trace_id,
+        second_trace_id,
+    }
+
+
+def test_disposable_index_rebuilds_after_schema_database_error(tmp_path):
+    store = OtlpJsonlStore(tmp_path / "schema-error-index.otlp.jsonl")
+    trace_id = "59" * 16
+    store.append(_single_span_request(trace_id, "59" * 8, 100))
+    with sqlite3.connect(store.index_path) as connection:
+        connection.execute("DROP TABLE indexed_spans")
+        connection.execute("CREATE TABLE indexed_spans (broken TEXT)")
+
+    restarted = OtlpJsonlStore(store.path)
+
+    assert restarted.get_trace(trace_id)["trace_id"] == trace_id
+    assert [view["trace_id"] for view in restarted.trace_views()] == [trace_id]
+
+
+def test_disposable_index_rebuilds_after_query_database_error(tmp_path):
+    store = OtlpJsonlStore(tmp_path / "query-error-index.otlp.jsonl")
+    trace_id = "5b" * 16
+    store.append(_single_span_request(trace_id, "5b" * 8, 100))
+    with sqlite3.connect(store.index_path) as connection:
+        connection.execute("DROP TABLE indexed_spans")
+        connection.execute("CREATE TABLE indexed_spans (trace_id TEXT NOT NULL)")
+        connection.execute(
+            "CREATE INDEX indexed_spans_trace ON indexed_spans (trace_id)"
+        )
+
+    restarted = OtlpJsonlStore(store.path)
+
+    assert restarted.get_trace(trace_id)["trace_id"] == trace_id
+    assert [view["trace_id"] for view in restarted.trace_views()] == [trace_id]
+
+
+def test_index_recovery_does_not_hide_invalid_canonical_otlp(tmp_path):
+    store = OtlpJsonlStore(tmp_path / "corrupt-index-invalid-otlp.otlp.jsonl")
+    store.append(_single_span_request("5a" * 16, "5a" * 8, 100))
+    with store.path.open("ab") as handle:
+        handle.write(b'{"futureField":true}\n')
+    store.index_path.write_bytes(store.index_path.read_bytes()[:64])
+
+    with pytest.raises(ValueError, match="invalid OTLP JSONL record at line 2"):
+        OtlpJsonlStore(store.path).trace_views()
 
 
 def test_store_recovers_unterminated_tail_before_rebuild_and_append(tmp_path):

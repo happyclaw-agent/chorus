@@ -7,10 +7,10 @@ import os
 import sqlite3
 import threading
 from collections import defaultdict
-from collections.abc import Iterator, Sequence
-from contextlib import closing, contextmanager
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
     ExportTraceServiceRequest,
@@ -23,6 +23,7 @@ from abbrivio.otlp.projection import project_requests
 _INDEX_SCHEMA_VERSION = "1"
 _PATH_LOCKS: dict[Path, threading.RLock] = {}
 _PATH_LOCKS_GUARD = threading.Lock()
+_IndexResult = TypeVar("_IndexResult")
 
 
 def _lock_for_path(path: Path) -> threading.RLock:
@@ -56,8 +57,8 @@ class OtlpJsonlStore:
         encoded = (payload + "\n").encode("utf-8")
         with self._locked():
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            with closing(self._open_index()) as connection:
-                self._ensure_index(connection)
+            connection = self._open_ready_index()
+            try:
                 with self.path.open("ab") as handle:
                     offset = handle.tell()
                     try:
@@ -72,15 +73,25 @@ class OtlpJsonlStore:
                         except OSError:
                             pass
                         raise
-                with connection:
-                    affected = self._index_request(
-                        connection,
-                        indexed_request,
-                        line_offset=offset,
-                        line_length=len(encoded),
-                    )
-                    self._replace_roots(connection, affected)
-                    self._write_index_fingerprint(connection)
+                try:
+                    with connection:
+                        affected = self._index_request(
+                            connection,
+                            indexed_request,
+                            line_offset=offset,
+                            line_length=len(encoded),
+                        )
+                        self._replace_roots(connection, affected)
+                        self._write_index_fingerprint(connection)
+                except sqlite3.DatabaseError:
+                    self._close_index(connection)
+                    connection = None
+                    self._discard_index()
+                    rebuilt = self._open_ready_index()
+                    self._close_index(rebuilt)
+            finally:
+                if connection is not None:
+                    self._close_index(connection)
 
     def iter_requests(self) -> Iterator[ExportTraceServiceRequest]:
         if not self.path.exists():
@@ -110,9 +121,10 @@ class OtlpJsonlStore:
 
     def get_trace(self, trace_id: str) -> dict[str, Any] | None:
         normalized = trace_id.strip().lower()
-        with self._locked(), closing(self._open_index()) as connection:
-            self._ensure_index(connection)
-            requests = self._read_indexed_requests(connection, [normalized])
+        with self._locked():
+            requests = self._run_index_operation(
+                lambda connection: self._read_indexed_requests(connection, [normalized])
+            )
         for trace in project_requests(requests):
             if trace.trace_id == normalized:
                 return trace.to_dict()
@@ -129,8 +141,9 @@ class OtlpJsonlStore:
         if limit == 0:
             return []
 
-        with self._locked(), closing(self._open_index()) as connection:
-            self._ensure_index(connection)
+        def read_views(
+            connection: sqlite3.Connection,
+        ) -> tuple[list[tuple[str, str]], list[ExportTraceServiceRequest]]:
             query = (
                 "SELECT trace_id, root_span_id FROM trace_roots "
                 "ORDER BY start_ns DESC, trace_id DESC, root_span_id DESC"
@@ -140,10 +153,13 @@ class OtlpJsonlStore:
                 query += " LIMIT ?"
                 parameters = (limit,)
             selected_roots = list(connection.execute(query, parameters))
-            if not selected_roots:
-                return []
             trace_ids = list(dict.fromkeys(row[0] for row in selected_roots))
-            requests = self._read_indexed_requests(connection, trace_ids)
+            return selected_roots, self._read_indexed_requests(connection, trace_ids)
+
+        with self._locked():
+            selected_roots, requests = self._run_index_operation(read_views)
+        if not selected_roots:
+            return []
 
         by_root = {
             (str(view["trace_id"]), str(view["root_span_id"] or "")): view
@@ -157,56 +173,108 @@ class OtlpJsonlStore:
 
     def _open_index(self) -> sqlite3.Connection:
         self.index_path.parent.mkdir(parents=True, exist_ok=True)
-        connection = sqlite3.connect(self.index_path)
-        connection.execute("PRAGMA journal_mode=WAL")
-        connection.execute(
-            """
-            CREATE TABLE IF NOT EXISTS index_metadata (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL
+        connection: sqlite3.Connection | None = None
+        try:
+            connection = sqlite3.connect(self.index_path)
+            connection.execute("PRAGMA journal_mode=WAL")
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS index_metadata (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )
+                """
             )
-            """
-        )
-        connection.execute(
-            """
-            CREATE TABLE IF NOT EXISTS indexed_spans (
-                trace_id TEXT NOT NULL,
-                span_id TEXT NOT NULL,
-                parent_span_id TEXT,
-                start_ns TEXT NOT NULL,
-                end_ns TEXT NOT NULL,
-                line_offset INTEGER NOT NULL,
-                line_length INTEGER NOT NULL,
-                resource_index INTEGER NOT NULL,
-                scope_index INTEGER NOT NULL,
-                span_index INTEGER NOT NULL,
-                PRIMARY KEY (trace_id, span_id)
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS indexed_spans (
+                    trace_id TEXT NOT NULL,
+                    span_id TEXT NOT NULL,
+                    parent_span_id TEXT,
+                    start_ns TEXT NOT NULL,
+                    end_ns TEXT NOT NULL,
+                    line_offset INTEGER NOT NULL,
+                    line_length INTEGER NOT NULL,
+                    resource_index INTEGER NOT NULL,
+                    scope_index INTEGER NOT NULL,
+                    span_index INTEGER NOT NULL,
+                    PRIMARY KEY (trace_id, span_id)
+                )
+                """
             )
-            """
-        )
-        connection.execute(
-            """
-            CREATE INDEX IF NOT EXISTS indexed_spans_trace
-            ON indexed_spans (trace_id)
-            """
-        )
-        connection.execute(
-            """
-            CREATE TABLE IF NOT EXISTS trace_roots (
-                trace_id TEXT NOT NULL,
-                root_span_id TEXT NOT NULL,
-                start_ns TEXT NOT NULL,
-                PRIMARY KEY (trace_id, root_span_id)
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS indexed_spans_trace
+                ON indexed_spans (trace_id)
+                """
             )
-            """
-        )
-        connection.execute(
-            """
-            CREATE INDEX IF NOT EXISTS trace_roots_recent
-            ON trace_roots (start_ns DESC, trace_id DESC, root_span_id DESC)
-            """
-        )
-        return connection
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS trace_roots (
+                    trace_id TEXT NOT NULL,
+                    root_span_id TEXT NOT NULL,
+                    start_ns TEXT NOT NULL,
+                    PRIMARY KEY (trace_id, root_span_id)
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS trace_roots_recent
+                ON trace_roots (start_ns DESC, trace_id DESC, root_span_id DESC)
+                """
+            )
+            return connection
+        except BaseException:
+            if connection is not None:
+                self._close_index(connection)
+            raise
+
+    @staticmethod
+    def _close_index(connection: sqlite3.Connection) -> None:
+        try:
+            connection.close()
+        except sqlite3.DatabaseError:
+            pass
+
+    def _discard_index(self) -> None:
+        for path in (
+            self.index_path,
+            Path(f"{self.index_path}-wal"),
+            Path(f"{self.index_path}-shm"),
+            Path(f"{self.index_path}-journal"),
+        ):
+            path.unlink(missing_ok=True)
+
+    def _open_ready_index(self) -> sqlite3.Connection:
+        for attempt in range(2):
+            connection: sqlite3.Connection | None = None
+            try:
+                connection = self._open_index()
+                self._ensure_index(connection)
+                return connection
+            except BaseException as error:
+                if connection is not None:
+                    self._close_index(connection)
+                if not isinstance(error, sqlite3.DatabaseError) or attempt > 0:
+                    raise
+                self._discard_index()
+        raise AssertionError("unreachable")
+
+    def _run_index_operation(
+        self, operation: Callable[[sqlite3.Connection], _IndexResult]
+    ) -> _IndexResult:
+        for attempt in range(2):
+            connection = self._open_ready_index()
+            try:
+                return operation(connection)
+            except sqlite3.DatabaseError:
+                if attempt > 0:
+                    raise
+            finally:
+                self._close_index(connection)
+            self._discard_index()
+        raise AssertionError("unreachable")
 
     def _canonical_fingerprint(self) -> dict[str, str]:
         if not self.path.exists():

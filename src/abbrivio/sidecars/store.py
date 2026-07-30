@@ -141,6 +141,15 @@ def _validated_byte_limit(max_bytes: int) -> int:
     return max_bytes
 
 
+def _write_all(handle: Any, payload: bytes) -> None:
+    remaining = memoryview(payload)
+    while remaining:
+        written = handle.write(remaining)
+        if written is None or written <= 0:
+            raise OSError("incomplete sidecar write")
+        remaining = remaining[written:]
+
+
 class SidecarStore:
     """A generic, append-only store keyed by standard OTLP identifiers."""
 
@@ -163,7 +172,7 @@ class SidecarStore:
             with exclusive_file_lock(lock_path):
                 yield
 
-    def append(self, collection: str, record: dict[str, Any]) -> None:
+    def append(self, collection: str, record: dict[str, Any]) -> dict[str, Any]:
         path = self.path_for(collection)
         if not isinstance(record, dict):
             raise TypeError("sidecar record must be a JSON object")
@@ -177,13 +186,63 @@ class SidecarStore:
             )
         except (TypeError, ValueError) as error:
             raise ValueError("sidecar record must be JSON serializable") from error
+        persisted = json.loads(payload)
         encoded = (payload + "\n").encode("utf-8")
         with self._locked(path):
             path.parent.mkdir(parents=True, exist_ok=True)
-            with path.open("ab") as handle:
-                handle.write(encoded)
-                handle.flush()
-                os.fsync(handle.fileno())
+            with path.open("a+b", buffering=0) as handle:
+                self._recover_incomplete_tail(handle)
+                handle.seek(0, os.SEEK_END)
+                acknowledged_offset = handle.tell()
+                try:
+                    _write_all(handle, encoded)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                except BaseException:
+                    try:
+                        handle.truncate(acknowledged_offset)
+                        handle.flush()
+                        os.fsync(handle.fileno())
+                    except OSError:
+                        pass
+                    raise
+        return persisted
+
+    @staticmethod
+    def _recover_incomplete_tail(handle: Any) -> None:
+        """Repair framing left by an interrupted append while locked."""
+        handle.seek(0, os.SEEK_END)
+        end_offset = handle.tell()
+        if end_offset == 0:
+            return
+
+        handle.seek(-1, os.SEEK_END)
+        if handle.read(1) == b"\n":
+            return
+
+        cursor = end_offset
+        last_newline = -1
+        while cursor > 0 and last_newline < 0:
+            start = max(0, cursor - 8192)
+            handle.seek(start)
+            chunk = handle.read(cursor - start)
+            relative = chunk.rfind(b"\n")
+            if relative >= 0:
+                last_newline = start + relative
+                break
+            cursor = start
+
+        tail_offset = last_newline + 1
+        handle.seek(tail_offset)
+        tail = handle.read()
+        try:
+            json.loads(tail)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            handle.truncate(tail_offset)
+        else:
+            _write_all(handle, b"\n")
+        handle.flush()
+        os.fsync(handle.fileno())
 
     def read(
         self, collection: str, *, limit: int | None = None

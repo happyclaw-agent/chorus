@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import statistics
 import threading
@@ -467,7 +468,7 @@ def create_app(
             for span in genai_spans:
                 attributes = span.get("attributes") or {}
                 amount = _number(attributes.get("abbrivio.cost.amount"))
-                if amount is None:
+                if amount is None or not math.isfinite(amount) or amount < 0:
                     continue
                 currency = str(
                     attributes.get("abbrivio.cost.currency") or "unknown"
@@ -596,10 +597,10 @@ def create_app(
         except ValueError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
         try:
-            sidecars.append(collection, record)
+            stored = sidecars.append(collection, record)
         except (TypeError, ValueError) as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
-        return record
+        return stored
 
     @app.get("/api/sidecars/{collection}")
     def read_sidecars(

@@ -136,6 +136,66 @@ def test_observer_exports_genai_client_readable_span_with_real_ids():
     assert not any(isinstance(value, dict) for value in attributes.values())
 
 
+@pytest.mark.parametrize("digits", range(1, 10))
+def test_observer_preserves_every_rfc3339_fractional_nanosecond_digit(digits):
+    exporter = RecordingExporter()
+    observer = AbbrivioCompletionObserver(exporter)
+    fraction = "123456789"[:digits]
+
+    observer(
+        replace(
+            Observation(),
+            started_at=f"2026-07-30T12:00:00.{fraction}Z",
+        )
+    )
+
+    assert exporter.spans[0].start_time % 1_000_000_000 == int(fraction.ljust(9, "0"))
+
+
+def test_observer_preserves_nanoseconds_with_offsets_and_naive_utc_behavior():
+    exporter = RecordingExporter()
+    observer = AbbrivioCompletionObserver(exporter)
+
+    observer(
+        replace(
+            Observation(),
+            started_at="2026-07-30T08:00:00.987654321-04:00",
+        )
+    )
+    observer(
+        replace(
+            Observation(),
+            started_at="2026-07-30T12:00:00.987654321Z",
+        )
+    )
+    observer(
+        replace(
+            Observation(),
+            started_at="2026-07-30T12:00:00.987654321",
+        )
+    )
+
+    assert {span.start_time for span in exporter.spans} == {
+        exporter.spans[0].start_time
+    }
+    assert exporter.spans[0].start_time % 1_000_000_000 == 987_654_321
+
+
+def test_observer_rejects_more_than_nine_fractional_timestamp_digits():
+    exporter = RecordingExporter()
+    observer = AbbrivioCompletionObserver(exporter)
+
+    with pytest.raises(ValueError, match="at most 9 fractional-second digits"):
+        observer(
+            replace(
+                Observation(),
+                started_at="2026-07-30T12:00:00.1234567890+00:00",
+            )
+        )
+
+    assert exporter.spans == []
+
+
 def test_error_observation_uses_standard_status_error_and_http_attributes():
     exporter = RecordingExporter()
     observer = AbbrivioCompletionObserver(exporter)

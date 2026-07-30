@@ -390,20 +390,78 @@ def test_generic_sidecar_ingestion_accepts_objects_and_known_collections(tmp_pat
     client = TestClient(app)
     record = {
         "any_application_field": "is preserved",
-        "trace": {"trace_id": "11" * 16},
+        "trace": {
+            "trace_id": "AB" * 16,
+            "span_id": "CD" * 8,
+            "root_span_id": "EF" * 8,
+        },
+    }
+    stored = {
+        **record,
+        "trace": {
+            "trace_id": "ab" * 16,
+            "span_id": "cd" * 8,
+            "root_span_id": "ef" * 8,
+        },
     }
 
     response = client.post("/api/sidecars/content", json=record)
 
     assert response.status_code == 200
-    assert response.json() == record
-    assert app.state.sidecar_store.read("content") == [record]
+    assert response.json() == stored
+    assert app.state.sidecar_store.read("content") == [stored]
     assert client.post("/api/sidecars/not-a-collection", json=record).status_code == 404
     assert client.post("/api/sidecars/content", json=[record]).status_code == 422
     assert (
         client.post("/api/sidecars/content", content=b'{"value":NaN}').status_code
         == 422
     )
+
+
+def test_summary_ignores_invalid_costs_from_generic_otlp(tmp_path):
+    app = create_app(tmp_path)
+    spans = []
+    for index, amount in enumerate((-1.25, "NaN", "Infinity", "-Infinity", 0.75)):
+        spans.append(
+            {
+                "traceId": f"{index + 1:032x}",
+                "spanId": f"{index + 1:016x}",
+                "name": "generic-genai-call",
+                "startTimeUnixNano": str(1_000_000_000 + index),
+                "endTimeUnixNano": str(1_001_000_000 + index),
+                "attributes": [
+                    {
+                        "key": "gen_ai.operation.name",
+                        "value": {"stringValue": "chat"},
+                    },
+                    {
+                        "key": "abbrivio.cost.amount",
+                        "value": {"doubleValue": amount},
+                    },
+                    {
+                        "key": "abbrivio.cost.currency",
+                        "value": {"stringValue": "usd"},
+                    },
+                ],
+            }
+        )
+    payload = {"resourceSpans": [{"scopeSpans": [{"spans": spans}]}]}
+    client = TestClient(app)
+
+    ingestion = client.post(
+        "/v1/traces",
+        content=json.dumps(payload, separators=(",", ":")),
+        headers={"content-type": "application/json"},
+    )
+    summary = client.get("/api/summary").json()
+
+    assert ingestion.status_code == 200
+    assert summary["counts"]["genai_calls"] == 5
+    assert summary["cost"] == {
+        "by_currency": {"USD": 0.75},
+        "priced_calls": 1,
+        "coverage": 0.2,
+    }
 
 
 def test_generic_sidecar_reads_are_authenticated_and_bounded(tmp_path):

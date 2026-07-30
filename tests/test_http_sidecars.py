@@ -39,7 +39,9 @@ def test_http_sidecar_writer_posts_json_with_auth_and_timeout(monkeypatch):
     def fake_urlopen(outbound, *, timeout):
         observed["request"] = outbound
         observed["timeout"] = timeout
-        return _Response(outbound.data)
+        acknowledged = json.loads(outbound.data)
+        acknowledged["trace"]["trace_id"] = acknowledged["trace"]["trace_id"].lower()
+        return _Response(json.dumps(acknowledged).encode())
 
     monkeypatch.setattr(http_sidecars, "_open_without_redirects", fake_urlopen)
     writer = HttpSidecarWriter(
@@ -47,7 +49,7 @@ def test_http_sidecar_writer_posts_json_with_auth_and_timeout(monkeypatch):
         bearer_token="ingestion-secret",
         timeout=2.5,
     )
-    record = {"trace": {"trace_id": "11" * 16}, "kind": "application_event"}
+    record = {"trace": {"trace_id": "AB" * 16}, "kind": "application_event"}
 
     result = writer.append("feedback", record)
 
@@ -58,7 +60,10 @@ def test_http_sidecar_writer_posts_json_with_auth_and_timeout(monkeypatch):
     assert outbound.get_header("Content-type") == "application/json"
     assert json.loads(outbound.data) == record
     assert observed["timeout"] == 2.5
-    assert result == record
+    assert result == {
+        "trace": {"trace_id": "ab" * 16},
+        "kind": "application_event",
+    }
 
 
 def test_http_sidecar_client_reads_with_auth_limit_and_latest_deduplication(

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+import re
 import secrets
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -39,6 +40,12 @@ _PROVIDER_NAMES = {
     "xai": "x_ai",
     "x_ai": "x_ai",
 }
+_RFC3339_TIMESTAMP = re.compile(
+    r"^(?P<date>\d{4}-\d{2}-\d{2})T"
+    r"(?P<time>\d{2}:\d{2}:\d{2})"
+    r"(?:\.(?P<fraction>\d{1,9}))?"
+    r"(?P<offset>Z|[+-]\d{2}:\d{2})?$"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,19 +131,30 @@ def _new_span_id() -> int:
 
 def _iso_to_unix_nano(value: str) -> int:
     normalized = value.strip()
-    if normalized.endswith("Z"):
-        normalized = normalized[:-1] + "+00:00"
-    parsed = datetime.fromisoformat(normalized)
+    match = _RFC3339_TIMESTAMP.fullmatch(normalized)
+    if match is None:
+        raise ValueError(
+            "started_at must be an RFC 3339 timestamp with at most 9 "
+            "fractional-second digits"
+        )
+    offset = match.group("offset") or ""
+    if offset == "Z":
+        offset = "+00:00"
+    try:
+        parsed = datetime.fromisoformat(
+            f"{match.group('date')}T{match.group('time')}{offset}"
+        )
+    except ValueError as error:
+        raise ValueError("started_at must be a valid RFC 3339 timestamp") from error
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=UTC)
     parsed = parsed.astimezone(UTC)
     epoch = datetime(1970, 1, 1, tzinfo=UTC)
     delta = parsed - epoch
-    return (
-        delta.days * 86_400_000_000_000
-        + delta.seconds * 1_000_000_000
-        + delta.microseconds * 1_000
-    )
+    whole_seconds = delta.days * 86_400_000_000_000 + delta.seconds * 1_000_000_000
+    fraction = match.group("fraction") or ""
+    fractional_nanoseconds = int(fraction.ljust(9, "0")) if fraction else 0
+    return whole_seconds + fractional_nanoseconds
 
 
 def _integer(value: Any) -> int | None:

@@ -300,7 +300,7 @@ def test_sidecar_append_validates_and_normalizes_optional_trace_reference(tmp_pa
         "application_field": {"anything": True},
     }
 
-    store.append("feedback", original)
+    stored = store.append("feedback", original)
     store.append("feedback", {"feedback_id": "unlinked"})
     store.append("feedback", {"feedback_id": "explicit-null", "trace": None})
 
@@ -311,12 +311,114 @@ def test_sidecar_append_validates_and_normalizes_optional_trace_reference(tmp_pa
         "root_span_id": "ef" * 8,
         "application_key": "preserved",
     }
+    assert stored == records[0]
     assert records[0]["application_field"] == {"anything": True}
     assert original["trace"]["trace_id"] == "AB" * 16
     assert records[1:] == [
         {"feedback_id": "unlinked"},
         {"feedback_id": "explicit-null", "trace": None},
     ]
+
+
+def test_sidecar_append_recovers_incomplete_tail_before_next_acknowledgement(
+    tmp_path,
+):
+    store = SidecarStore(tmp_path)
+    first = {"feedback_id": "first"}
+    second = {"feedback_id": "second"}
+    store.append("feedback", first)
+    committed = store.path_for("feedback").read_bytes()
+    with store.path_for("feedback").open("ab") as handle:
+        handle.write(b'{"feedback_id":"interrupted"')
+
+    assert store.append("feedback", second) == second
+
+    assert store.path_for("feedback").read_bytes().startswith(committed)
+    assert store.read("feedback") == [first, second]
+    assert all(
+        json.loads(line) in (first, second)
+        for line in store.path_for("feedback").read_text().splitlines()
+    )
+
+
+@pytest.mark.parametrize(
+    "existing",
+    [
+        {"feedback_id": "complete"},
+        {"feedback_id": "future-link-format", "trace": "not-an-object-yet"},
+    ],
+    ids=["valid", "syntactically-complete-forward-format"],
+)
+def test_sidecar_append_preserves_complete_unterminated_record(tmp_path, existing):
+    store = SidecarStore(tmp_path)
+    path = store.path_for("feedback")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    original = json.dumps(existing, separators=(",", ":")).encode("utf-8")
+    path.write_bytes(original)
+    following = {"feedback_id": "following"}
+
+    store.append("feedback", following)
+
+    assert path.read_bytes().startswith(original + b"\n")
+    assert store.read("feedback") == [existing, following]
+
+
+def test_sidecar_append_rolls_back_partial_write_after_recovering_crash_tail(
+    tmp_path, monkeypatch
+):
+    store = SidecarStore(tmp_path)
+    first = {"feedback_id": "first"}
+    failed = {"feedback_id": "failed"}
+    following = {"feedback_id": "following"}
+    store.append("feedback", first)
+    path = store.path_for("feedback")
+    committed = path.read_bytes()
+    with path.open("ab") as handle:
+        handle.write(b'{"feedback_id":"prior-crash"')
+
+    original_write_all = sidecar_store_module._write_all
+
+    def fail_after_partial_write(handle, payload):
+        handle.write(payload[: max(1, len(payload) // 2)])
+        raise OSError("simulated partial sidecar write")
+
+    monkeypatch.setattr(
+        sidecar_store_module,
+        "_write_all",
+        fail_after_partial_write,
+    )
+    with pytest.raises(OSError, match="simulated partial sidecar write"):
+        store.append("feedback", failed)
+
+    assert path.read_bytes() == committed
+
+    monkeypatch.setattr(sidecar_store_module, "_write_all", original_write_all)
+    assert store.append("feedback", following) == following
+    assert store.read("feedback") == [first, following]
+
+
+def test_sidecar_append_rolls_back_when_fsync_fails(tmp_path, monkeypatch):
+    store = SidecarStore(tmp_path)
+    first = {"feedback_id": "first"}
+    store.append("feedback", first)
+    path = store.path_for("feedback")
+    committed = path.read_bytes()
+    original_fsync = sidecar_store_module.os.fsync
+    calls = 0
+
+    def fail_once(file_descriptor):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError("simulated sidecar fsync failure")
+        return original_fsync(file_descriptor)
+
+    monkeypatch.setattr(sidecar_store_module.os, "fsync", fail_once)
+    with pytest.raises(OSError, match="simulated sidecar fsync failure"):
+        store.append("feedback", {"feedback_id": "failed"})
+
+    assert path.read_bytes() == committed
+    assert store.read("feedback") == [first]
 
 
 @pytest.mark.parametrize("trace", ["not-an-object", [], 3])
