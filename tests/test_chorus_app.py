@@ -123,17 +123,34 @@ def test_feedback_views_deduplicate_retried_event_ids(tmp_path):
                 ),
             ).to_dict(),
         )
+    sidecars.append(
+        "feedback",
+        {
+            "schema_version": 1,
+            "kind": "operator_note",
+            "value": "unkeyed feedback remains visible",
+            "trace": {
+                "trace_id": reference.trace_id,
+                "span_id": reference.span_id,
+                "root_span_id": reference.span_id,
+            },
+        },
+    )
     client = TestClient(app)
 
     summary = client.get("/api/summary").json()
     traces = client.get("/api/traces").json()["traces"]
     detail = client.get(f"/api/traces/{reference.trace_id}").json()
 
-    assert summary["counts"]["feedback"] == 1
-    assert summary["feedback"]["by_kind"] == {"delivery_status": 1}
-    assert traces[0]["feedback_count"] == 1
-    assert len(detail["feedback"]) == 1
+    assert summary["counts"]["feedback"] == 2
+    assert summary["feedback"]["by_kind"] == {
+        "delivery_status": 1,
+        "operator_note": 1,
+    }
+    assert traces[0]["feedback_count"] == 2
+    assert len(detail["feedback"]) == 2
     assert detail["feedback"][0]["value"] == "delivered"
+    assert detail["feedback"][1]["kind"] == "operator_note"
 
 
 def test_missing_content_is_extraction_error_and_explicit_values_fix_it(tmp_path):

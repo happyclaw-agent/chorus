@@ -326,6 +326,24 @@ class SidecarStore:
                 latest[value] = record
         return list(latest.values())
 
+    def deduplicated(self, collection: str, key: str) -> list[dict[str, Any]]:
+        """Keep unkeyed records and only collapse repeated nonempty keys."""
+        latest: dict[str, tuple[int, dict[str, Any]]] = {}
+        unkeyed: list[tuple[int, dict[str, Any]]] = []
+        for position, record in enumerate(self.read(collection)):
+            value = str(record.get(key) or "")
+            if value:
+                latest[value] = (position, record)
+            else:
+                unkeyed.append((position, record))
+        return [
+            record
+            for _position, record in sorted(
+                [*unkeyed, *latest.values()],
+                key=lambda item: item[0],
+            )
+        ]
+
     def latest_json_bounded(
         self,
         collection: str,
@@ -450,7 +468,7 @@ class SidecarStore:
     def feedback_for_trace(self, trace_id: str) -> list[dict[str, Any]]:
         return [
             record
-            for record in self.latest("feedback", "feedback_id")
+            for record in self.deduplicated("feedback", "feedback_id")
             if isinstance(record.get("trace"), dict)
             and record["trace"].get("trace_id") == trace_id
         ]
