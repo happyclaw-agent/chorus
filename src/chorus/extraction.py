@@ -63,13 +63,15 @@ class DefaultGenAIExtractionProfile:
     ) -> ExtractedEvaluation:
         attributes = (span or {}).get("attributes") or {}
         content = content or {}
-        input_text = None
-        output_text = None
+        input_text = _text(content.get("input_text"))
+        output_text = _text(content.get("output_text"))
         for key in (
             "gen_ai.input.messages",
             "gen_ai.prompt",
             "gen_ai.input",
         ):
+            if input_text:
+                break
             if key in attributes and (input_text := _text(attributes[key])):
                 break
         for key in (
@@ -77,10 +79,10 @@ class DefaultGenAIExtractionProfile:
             "gen_ai.completion",
             "gen_ai.output",
         ):
+            if output_text:
+                break
             if key in attributes and (output_text := _text(attributes[key])):
                 break
-        input_text = input_text or _text(content.get("input_text"))
-        output_text = output_text or _text(content.get("output_text"))
         context = [str(value) for value in (content.get("context") or [])]
         resource_attributes = (
             ((span or {}).get("resource") or {}).get("attributes")

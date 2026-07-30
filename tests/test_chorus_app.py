@@ -861,6 +861,95 @@ def test_root_only_promotion_selects_genai_descendant_within_that_root(tmp_path)
     }
 
 
+def test_root_promotion_prefers_later_root_content_but_explicit_span_keeps_child(
+    tmp_path,
+):
+    trace_id = "99" * 16
+    root_id = "11" * 8
+    child_id = "22" * 8
+    trace_store = OtlpJsonlStore(tmp_path / "traces.otlp.jsonl")
+    observer = AbbrivioCompletionObserver(OtlpJsonlSpanExporter(trace_store))
+    observer(Observation(trace_id=trace_id, span_id=root_id))
+    AbbrivioCompletionObserver(
+        OtlpJsonlSpanExporter(trace_store),
+        app_attributes={
+            "gen_ai.input.messages": "provider span input",
+            "gen_ai.output.messages": "provider span draft",
+        },
+    )(
+        Observation(
+            trace_id=trace_id,
+            span_id=child_id,
+            parent_span_id=root_id,
+            started_at="2026-07-30T12:00:01Z",
+        )
+    )
+    app = create_app(tmp_path, trace_store=trace_store)
+    sidecars = app.state.sidecar_store
+    sidecars.append(
+        "content",
+        ContentRecord(
+            schema_version=1,
+            content_id="turn-content",
+            recorded_at="2026-07-30T12:00:02Z",
+            trace=TraceRef(
+                trace_id=trace_id,
+                span_id=child_id,
+                root_span_id=root_id,
+            ),
+            input_text="provider input",
+            output_text="provider draft",
+        ).to_dict(),
+    )
+    sidecars.append(
+        "content",
+        ContentRecord(
+            schema_version=1,
+            content_id="turn-content",
+            recorded_at="2026-07-30T12:00:03Z",
+            trace=TraceRef(
+                trace_id=trace_id,
+                span_id=root_id,
+                root_span_id=root_id,
+            ),
+            input_text="application input",
+            output_text="application final",
+        ).to_dict(),
+    )
+    sidecars.append(
+        "content",
+        ContentRecord(
+            schema_version=1,
+            content_id="turn-content",
+            recorded_at="2026-07-30T12:00:02.500000Z",
+            trace=TraceRef(
+                trace_id=trace_id,
+                span_id=child_id,
+                root_span_id=root_id,
+            ),
+            input_text="provider retry input",
+            output_text="provider retry draft",
+        ).to_dict(),
+    )
+    client = TestClient(app)
+
+    root_promotion = client.post(
+        f"/api/traces/{trace_id}/promote",
+        json={"root_span_id": root_id},
+    )
+    child_promotion = client.post(
+        f"/api/traces/{trace_id}/promote",
+        json={"span_id": child_id, "root_span_id": root_id},
+    )
+
+    assert root_promotion.status_code == 200
+    assert root_promotion.json()["input_text"] == "application input"
+    assert root_promotion.json()["actual_output"] == "application final"
+    assert child_promotion.status_code == 200
+    assert child_promotion.json()["input_text"] == "provider retry input"
+    assert child_promotion.json()["actual_output"] == "provider retry draft"
+
+
 def test_promotion_does_not_use_root_linked_content_from_another_run(tmp_path):
     trace_id = "77" * 16
     first_root_id = "11" * 8
