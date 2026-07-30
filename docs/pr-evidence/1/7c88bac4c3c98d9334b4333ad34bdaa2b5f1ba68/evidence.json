@@ -1,0 +1,36 @@
+{
+  "manifestVersion": 1,
+  "generatedAt": "2026-07-30T14:38:11Z",
+  "repository": "git@github.com:happyclaw-agent/chorus.git",
+  "prUrl": "https://github.com/happyclaw-agent/chorus/pull/1",
+  "demoedCommit": "7c88bac4c3c98d9334b4333ad34bdaa2b5f1ba68",
+  "kind": "browser-and-api",
+  "claims": [
+    "The official OpenTelemetry OTLP HTTP exporter sends an ordinary root and GenAI child into the real Chorus receiver",
+    "The public HttpSidecarWriter sends trace-linked retained content and explicit user feedback through generic sidecar endpoints",
+    "Chorus displays root latency, GenAI token usage, known cost, pricing coverage, feedback, service, and model identity",
+    "Default root-row promotion selects the GenAI child and persists an evaluation case retaining the observed content and exact OTLP trace, root, and span identifiers",
+    "The canonical OTLP export remains a standard ExportTraceServiceRequest containing both original spans"
+  ],
+  "launchCommands": [
+    "CHORUS_DATA_DIR=/tmp/chorus-pr1-7c88bac.urBojy uv run uvicorn chorus.app:create_app --factory --host 127.0.0.1 --port 8116"
+  ],
+  "demoCommands": [
+    "Official OpenTelemetry SDK plus OTLPSpanExporter to http://127.0.0.1:8116/v1/traces, HttpSidecarWriter to http://127.0.0.1:8116, then browser Promote",
+    "GET /api/summary, /api/evals, and /api/otlp/traces to verify metrics, promoted provenance, and canonical export"
+  ],
+  "isolation": "Dedicated /tmp corpus, synthetic evidence-agent data, localhost only, no production services, customer records, or message delivery",
+  "limitations": [
+    "Local receiver path only; no production deployment or external collector"
+  ],
+  "artifacts": [
+    {
+      "path": "/Users/happyclaw/worktrees/chorus-otlp-repo/docs/pr-evidence/1/7c88bac4c3c98d9334b4333ad34bdaa2b5f1ba68/chorus-otlp-sidecar-demo.webm",
+      "name": "chorus-otlp-sidecar-demo.webm",
+      "bytes": 119224,
+      "sha256": "c6bd83b7043abd7f2f28749e9894518587eead2b7b0d0080bd7d12dbf99d4a6f",
+      "mimeType": "video/webm",
+      "durationSeconds": 2.16
+    }
+  ]
+}

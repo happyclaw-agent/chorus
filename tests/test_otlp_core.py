@@ -1,0 +1,900 @@
+from __future__ import annotations
+
+import asyncio
+import gzip
+import json
+import math
+import multiprocessing
+import os
+import sqlite3
+import threading
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+
+import httpx
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
+    ExportTraceServiceRequest,
+    ExportTraceServiceResponse,
+)
+from opentelemetry.proto.trace.v1.trace_pb2 import Span, Status
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.trace import SpanKind
+
+import abbrivio.otlp.receiver as otlp_receiver_module
+import abbrivio.otlp.store as otlp_store_module
+from abbrivio.otlp import (
+    OtlpJsonlSpanExporter,
+    OtlpJsonlStore,
+    create_otlp_router,
+    decode_otlp_json,
+    decode_otlp_protobuf,
+    encode_otlp_json,
+    encode_otlp_protobuf,
+    project_requests,
+)
+from chorus.app import create_app
+
+TRACE_ID = "00112233445566778899aabbccddeeff"
+ROOT_ID = "0011223344556677"
+CHILD_ID = "1021324354657687"
+SECOND_ROOT_ID = "ffeeddccbbaa9988"
+OTHER_TRACE_ID = "fedcba98765432100123456789abcdef"
+OTHER_ROOT_ID = "8899aabbccddeeff"
+UNKNOWN_VARINT_FIELD_99 = b"\x98\x06\x01"
+
+
+def _set_string_attribute(container, key: str, value: str) -> None:
+    attribute = container.attributes.add()
+    attribute.key = key
+    attribute.value.string_value = value
+
+
+def _complete_request() -> ExportTraceServiceRequest:
+    request = ExportTraceServiceRequest()
+    resource_spans = request.resource_spans.add()
+    resource_spans.schema_url = "https://opentelemetry.io/schemas/1.37.0"
+    resource_spans.resource.dropped_attributes_count = 2
+    _set_string_attribute(resource_spans.resource, "service.name", "generic-agent")
+
+    scope_spans = resource_spans.scope_spans.add()
+    scope_spans.schema_url = "https://example.test/scope-schema"
+    scope_spans.scope.name = "test.instrumentation"
+    scope_spans.scope.version = "1.2.3"
+    scope_spans.scope.dropped_attributes_count = 3
+    _set_string_attribute(scope_spans.scope, "scope.attribute", "preserved")
+
+    root = scope_spans.spans.add()
+    root.trace_id = bytes.fromhex(TRACE_ID)
+    root.span_id = bytes.fromhex(ROOT_ID)
+    root.trace_state = "vendor=value"
+    root.flags = 0x101
+    root.name = "agent.run"
+    root.kind = Span.SPAN_KIND_SERVER
+    root.start_time_unix_nano = 1_000_000_001
+    root.end_time_unix_nano = 1_025_000_001
+    root.dropped_attributes_count = 4
+    root.dropped_events_count = 5
+    root.dropped_links_count = 6
+    root.status.code = Status.STATUS_CODE_ERROR
+    root.status.message = "preserved status"
+    _set_string_attribute(root, "gen_ai.operation.name", "chat")
+    int_attribute = root.attributes.add()
+    int_attribute.key = "gen_ai.usage.input_tokens"
+    int_attribute.value.int_value = 42
+    bytes_attribute = root.attributes.add()
+    bytes_attribute.key = "opaque"
+    bytes_attribute.value.bytes_value = b"\x00\xff"
+    bool_attribute = root.attributes.add()
+    bool_attribute.key = "feature.enabled"
+    bool_attribute.value.bool_value = True
+    double_attribute = root.attributes.add()
+    double_attribute.key = "sampling.score"
+    double_attribute.value.double_value = 0.75
+    array_attribute = root.attributes.add()
+    array_attribute.key = "choices"
+    array_attribute.value.array_value.values.add().string_value = "one"
+    array_attribute.value.array_value.values.add().string_value = "two"
+    kvlist_attribute = root.attributes.add()
+    kvlist_attribute.key = "structured"
+    nested = kvlist_attribute.value.kvlist_value.values.add()
+    nested.key = "answer"
+    nested.value.int_value = 42
+
+    event = root.events.add()
+    event.time_unix_nano = 1_010_000_001
+    event.name = "tool.selected"
+    event.dropped_attributes_count = 7
+    _set_string_attribute(event, "tool.name", "search")
+
+    link = root.links.add()
+    link.trace_id = bytes.fromhex(OTHER_TRACE_ID)
+    link.span_id = bytes.fromhex(OTHER_ROOT_ID)
+    link.trace_state = "linked=value"
+    link.flags = 0x100
+    link.dropped_attributes_count = 8
+    _set_string_attribute(link, "link.reason", "handoff")
+
+    child = scope_spans.spans.add()
+    child.trace_id = bytes.fromhex(TRACE_ID)
+    child.span_id = bytes.fromhex(CHILD_ID)
+    child.parent_span_id = bytes.fromhex(ROOT_ID)
+    child.name = "tool.search"
+    child.kind = Span.SPAN_KIND_CLIENT
+    child.start_time_unix_nano = 1_005_000_001
+    child.end_time_unix_nano = 1_015_000_001
+
+    second_root = scope_spans.spans.add()
+    second_root.trace_id = bytes.fromhex(TRACE_ID)
+    second_root.span_id = bytes.fromhex(SECOND_ROOT_ID)
+    second_root.name = "background.run"
+    second_root.start_time_unix_nano = 2_000_000_000
+    second_root.end_time_unix_nano = 2_005_000_000
+
+    other_resource = request.resource_spans.add()
+    _set_string_attribute(other_resource.resource, "service.name", "ordinary-service")
+    other_scope = other_resource.scope_spans.add()
+    other_scope.scope.name = "ordinary.instrumentation"
+    other_root = other_scope.spans.add()
+    other_root.trace_id = bytes.fromhex(OTHER_TRACE_ID)
+    other_root.span_id = bytes.fromhex(OTHER_ROOT_ID)
+    other_root.name = "ordinary.operation"
+    other_root.start_time_unix_nano = 3_000_000_000
+    other_root.end_time_unix_nano = 3_004_000_000
+    return request
+
+
+def _single_span_request(
+    trace_id: str,
+    span_id: str,
+    start_ns: int,
+    *,
+    parent_span_id: str | None = None,
+    service_name: str = "indexed-service",
+) -> ExportTraceServiceRequest:
+    request = ExportTraceServiceRequest()
+    resource_spans = request.resource_spans.add()
+    _set_string_attribute(resource_spans.resource, "service.name", service_name)
+    scope_spans = resource_spans.scope_spans.add()
+    scope_spans.scope.name = f"{service_name}.instrumentation"
+    span = scope_spans.spans.add()
+    span.trace_id = bytes.fromhex(trace_id)
+    span.span_id = bytes.fromhex(span_id)
+    if parent_span_id:
+        span.parent_span_id = bytes.fromhex(parent_span_id)
+    span.name = service_name
+    span.start_time_unix_nano = start_ns
+    span.end_time_unix_nano = start_ns + 10
+    return request
+
+
+def _request_with_unknown_field(*, nested: bool) -> ExportTraceServiceRequest:
+    request = _complete_request()
+    if nested:
+        span = request.resource_spans[0].scope_spans[0].spans[0]
+        span.ParseFromString(span.SerializeToString() + UNKNOWN_VARINT_FIELD_99)
+        return request
+
+    decoded = ExportTraceServiceRequest()
+    decoded.ParseFromString(request.SerializeToString() + UNKNOWN_VARINT_FIELD_99)
+    return decoded
+
+
+def _append_store_batch(path: str, namespace: int, count: int) -> list[str]:
+    store = OtlpJsonlStore(path)
+    trace_ids: list[str] = []
+    for offset in range(count):
+        value = namespace * 1_000 + offset + 1
+        trace_id = f"{value:032x}"
+        trace_ids.append(trace_id)
+        store.append(
+            _single_span_request(
+                trace_id,
+                f"{value:016x}",
+                value * 1_000,
+            )
+        )
+    return trace_ids
+
+
+def test_otlp_json_and_protobuf_round_trip_preserve_complete_messages():
+    original = _complete_request()
+
+    encoded = encode_otlp_json(original)
+    document = json.loads(encoded)
+    span = document["resourceSpans"][0]["scopeSpans"][0]["spans"][0]
+
+    assert span["traceId"] == TRACE_ID
+    assert span["spanId"] == ROOT_ID
+    assert span["kind"] == Span.SPAN_KIND_SERVER
+    assert span["startTimeUnixNano"] == "1000000001"
+    assert span["status"]["code"] == Status.STATUS_CODE_ERROR
+    assert span["links"][0]["traceId"] == OTHER_TRACE_ID
+    assert span["links"][0]["spanId"] == OTHER_ROOT_ID
+    assert any(
+        attribute["value"]
+        == {
+            "arrayValue": {
+                "values": [
+                    {"stringValue": "one"},
+                    {"stringValue": "two"},
+                ]
+            }
+        }
+        for attribute in span["attributes"]
+        if attribute["key"] == "choices"
+    )
+    assert document["resourceSpans"][0]["schemaUrl"].endswith("1.37.0")
+    assert document["resourceSpans"][0]["scopeSpans"][0]["schemaUrl"].endswith(
+        "scope-schema"
+    )
+
+    assert decode_otlp_json(encoded) == original
+    assert decode_otlp_protobuf(encode_otlp_protobuf(original)) == original
+
+
+def test_codecs_reject_zero_or_wrong_width_trace_identifiers():
+    request = _complete_request()
+    request.resource_spans[0].scope_spans[0].spans[0].trace_id = bytes(16)
+
+    with pytest.raises(ValueError, match="traceId"):
+        encode_otlp_json(request)
+    with pytest.raises(ValueError, match="traceId"):
+        decode_otlp_protobuf(request.SerializeToString())
+
+    document = json.loads(encode_otlp_json(_complete_request()))
+    document["resourceSpans"][0]["scopeSpans"][0]["spans"][0]["spanId"] = "01"
+    with pytest.raises(ValueError, match="span"):
+        decode_otlp_json(document)
+
+
+@pytest.mark.parametrize("nested", [False, True], ids=["root", "nested"])
+def test_protobuf_codec_rejects_unknown_fields_at_every_message_depth(nested):
+    request = _request_with_unknown_field(nested=nested)
+    payload = request.SerializeToString()
+
+    with pytest.raises(ValueError, match="unknown protobuf field"):
+        decode_otlp_protobuf(payload)
+    with pytest.raises(ValueError, match="unknown protobuf field"):
+        encode_otlp_protobuf(request)
+
+
+def test_nonfinite_doubles_keep_otlp_semantics_and_project_as_json_strings(tmp_path):
+    request = _complete_request()
+    root = request.resource_spans[0].scope_spans[0].spans[0]
+    special_values = {
+        "abbrivio.cost.amount": math.nan,
+        "test.positive_infinity": math.inf,
+        "test.negative_infinity": -math.inf,
+    }
+    for key, value in special_values.items():
+        attribute = root.attributes.add()
+        attribute.key = key
+        attribute.value.double_value = value
+
+    canonical_document = json.loads(encode_otlp_json(request))
+    canonical_span = canonical_document["resourceSpans"][0]["scopeSpans"][0]["spans"][0]
+    canonical_attributes = {
+        attribute["key"]: attribute["value"]["doubleValue"]
+        for attribute in canonical_span["attributes"]
+        if attribute["key"] in special_values
+    }
+    assert canonical_attributes == {
+        "abbrivio.cost.amount": "NaN",
+        "test.positive_infinity": "Infinity",
+        "test.negative_infinity": "-Infinity",
+    }
+
+    json_round_trip = decode_otlp_json(canonical_document)
+    protobuf_round_trip = decode_otlp_protobuf(encode_otlp_protobuf(request))
+    for decoded in (json_round_trip, protobuf_round_trip):
+        decoded_attributes = {
+            attribute.key: attribute.value.double_value
+            for attribute in decoded.resource_spans[0]
+            .scope_spans[0]
+            .spans[0]
+            .attributes
+            if attribute.key in special_values
+        }
+        assert math.isnan(decoded_attributes["abbrivio.cost.amount"])
+        assert decoded_attributes["test.positive_infinity"] == math.inf
+        assert decoded_attributes["test.negative_infinity"] == -math.inf
+
+    store = OtlpJsonlStore(tmp_path / "nonfinite.otlp.jsonl")
+    store.append(request)
+    trace = store.get_trace(TRACE_ID)
+    assert trace is not None
+    projected_attributes = trace["spans"][0]["attributes"]
+    assert projected_attributes["abbrivio.cost.amount"] == "NaN"
+    assert projected_attributes["test.positive_infinity"] == "Infinity"
+    assert projected_attributes["test.negative_infinity"] == "-Infinity"
+    json.dumps(trace, allow_nan=False)
+
+    client = TestClient(create_app(tmp_path, trace_store=store))
+    for path in (
+        "/api/traces",
+        f"/api/traces/{TRACE_ID}",
+        "/api/summary",
+        "/api/otlp/traces",
+    ):
+        response = client.get(path)
+        assert response.status_code == 200
+        json.dumps(response.json(), allow_nan=False)
+
+
+def test_store_writes_canonical_otlp_jsonl_and_projects_every_trace(tmp_path):
+    store = OtlpJsonlStore(tmp_path / "traces.otlp.jsonl")
+    original = _complete_request()
+    store.append(original)
+    store.append(original)
+
+    lines = store.path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 2
+    assert all("resourceSpans" in json.loads(line) for line in lines)
+    assert all(json.loads(line)["resourceSpans"][0]["scopeSpans"] for line in lines)
+    assert store.read_requests() == [original, original]
+
+    trace = store.get_trace(TRACE_ID)
+    assert trace is not None
+    assert set(trace["root_span_ids"]) == {ROOT_ID, SECOND_ROOT_ID}
+    assert len(trace["spans"]) == 3
+    assert {span["name"] for span in trace["spans"]} == {
+        "agent.run",
+        "tool.search",
+        "background.run",
+    }
+    assert trace["spans"][0]["events"][0]["name"] == "tool.selected"
+    assert trace["spans"][0]["links"][0]["traceId"] == OTHER_TRACE_ID
+
+    views = store.trace_views()
+    assert len(views) == 3
+    assert {(view["trace_id"], view["root_span_id"]) for view in views} == {
+        (TRACE_ID, ROOT_ID),
+        (TRACE_ID, SECOND_ROOT_ID),
+        (OTHER_TRACE_ID, OTHER_ROOT_ID),
+    }
+    root_view = next(view for view in views if view["root_span_id"] == ROOT_ID)
+    assert {span["span_id"] for span in root_view["spans"]} == {ROOT_ID, CHILD_ID}
+    assert root_view["latency_ms"] == 25.0
+
+
+def test_bounded_trace_views_use_index_across_restart(tmp_path, monkeypatch):
+    store = OtlpJsonlStore(tmp_path / "indexed.otlp.jsonl")
+    trace_ids = [f"{number:032x}" for number in range(1, 26)]
+    for number, trace_id in enumerate(trace_ids, start=1):
+        store.append(
+            _single_span_request(
+                trace_id,
+                f"{number:016x}",
+                number * 1_000,
+            )
+        )
+
+    original_decoder = otlp_store_module.decode_otlp_json
+    decoded_records = 0
+
+    def counting_decoder(value):
+        nonlocal decoded_records
+        decoded_records += 1
+        return original_decoder(value)
+
+    monkeypatch.setattr(otlp_store_module, "decode_otlp_json", counting_decoder)
+
+    views = store.trace_views(limit=2)
+    assert [view["trace_id"] for view in views] == list(reversed(trace_ids[-2:]))
+    assert decoded_records == 2
+
+    decoded_records = 0
+    restarted = OtlpJsonlStore(store.path)
+    assert restarted.trace_views(limit=1)[0]["trace_id"] == trace_ids[-1]
+    assert decoded_records == 1
+
+    decoded_records = 0
+    assert restarted.get_trace(trace_ids[0])["trace_id"] == trace_ids[0]
+    assert decoded_records == 1
+    assert restarted.index_path.exists()
+    assert len(store.path.read_text(encoding="utf-8").splitlines()) == 25
+
+
+def test_index_updates_roots_for_out_of_order_multi_resource_spans(tmp_path):
+    trace_id = "aa" * 16
+    root_id = "11" * 8
+    child_id = "22" * 8
+    second_root_id = "33" * 8
+    store = OtlpJsonlStore(tmp_path / "out-of-order.otlp.jsonl")
+
+    store.append(
+        _single_span_request(
+            trace_id,
+            child_id,
+            200,
+            parent_span_id=root_id,
+            service_name="child-service",
+        )
+    )
+    assert store.trace_views()[0]["root_span_id"] == child_id
+
+    store.append(
+        _single_span_request(
+            trace_id,
+            root_id,
+            100,
+            service_name="root-service",
+        )
+    )
+    connected = store.trace_views()
+    assert [view["root_span_id"] for view in connected] == [root_id]
+    assert {span["span_id"] for span in connected[0]["spans"]} == {
+        root_id,
+        child_id,
+    }
+    assert {
+        resource["attributes"]["service.name"] for resource in connected[0]["resources"]
+    } == {"root-service", "child-service"}
+
+    store.append(
+        _single_span_request(
+            trace_id,
+            second_root_id,
+            300,
+            service_name="second-root-service",
+        )
+    )
+    restarted = OtlpJsonlStore(store.path)
+    views = restarted.trace_views()
+    assert [view["root_span_id"] for view in views] == [second_root_id, root_id]
+    assert [span["span_id"] for span in restarted.trace_views(limit=1)[0]["spans"]] == [
+        second_root_id
+    ]
+
+
+def test_stale_index_rebuilds_after_canonical_append(tmp_path):
+    store = OtlpJsonlStore(tmp_path / "rebuild.otlp.jsonl")
+    first_trace_id = "44" * 16
+    second_trace_id = "55" * 16
+    store.append(_single_span_request(first_trace_id, "44" * 8, 100))
+
+    crash_window_request = _single_span_request(second_trace_id, "55" * 8, 200)
+    with store.path.open("a", encoding="utf-8") as handle:
+        handle.write(encode_otlp_json(crash_window_request) + "\n")
+
+    restarted = OtlpJsonlStore(store.path)
+    assert restarted.trace_views(limit=1)[0]["trace_id"] == second_trace_id
+    assert restarted.get_trace(first_trace_id)["trace_id"] == first_trace_id
+
+
+def test_truncated_disposable_index_rebuilds_for_reads(tmp_path):
+    store = OtlpJsonlStore(tmp_path / "corrupt-read-index.otlp.jsonl")
+    trace_id = "56" * 16
+    store.append(_single_span_request(trace_id, "56" * 8, 100))
+    canonical = store.path.read_bytes()
+    store.index_path.write_bytes(store.index_path.read_bytes()[:64])
+
+    restarted = OtlpJsonlStore(store.path)
+
+    assert restarted.get_trace(trace_id)["trace_id"] == trace_id
+    assert [view["trace_id"] for view in restarted.trace_views()] == [trace_id]
+    assert restarted.path.read_bytes() == canonical
+
+
+def test_truncated_disposable_index_rebuilds_before_append(tmp_path):
+    store = OtlpJsonlStore(tmp_path / "corrupt-append-index.otlp.jsonl")
+    first_trace_id = "57" * 16
+    second_trace_id = "58" * 16
+    store.append(_single_span_request(first_trace_id, "57" * 8, 100))
+    store.index_path.write_bytes(store.index_path.read_bytes()[:64])
+
+    restarted = OtlpJsonlStore(store.path)
+    restarted.append(_single_span_request(second_trace_id, "58" * 8, 200))
+
+    assert len(restarted.read_requests()) == 2
+    assert {view["trace_id"] for view in restarted.trace_views()} == {
+        first_trace_id,
+        second_trace_id,
+    }
+
+
+def test_disposable_index_rebuilds_after_schema_database_error(tmp_path):
+    store = OtlpJsonlStore(tmp_path / "schema-error-index.otlp.jsonl")
+    trace_id = "59" * 16
+    store.append(_single_span_request(trace_id, "59" * 8, 100))
+    with sqlite3.connect(store.index_path) as connection:
+        connection.execute("DROP TABLE indexed_spans")
+        connection.execute("CREATE TABLE indexed_spans (broken TEXT)")
+
+    restarted = OtlpJsonlStore(store.path)
+
+    assert restarted.get_trace(trace_id)["trace_id"] == trace_id
+    assert [view["trace_id"] for view in restarted.trace_views()] == [trace_id]
+
+
+def test_disposable_index_rebuilds_after_query_database_error(tmp_path):
+    store = OtlpJsonlStore(tmp_path / "query-error-index.otlp.jsonl")
+    trace_id = "5b" * 16
+    store.append(_single_span_request(trace_id, "5b" * 8, 100))
+    with sqlite3.connect(store.index_path) as connection:
+        connection.execute("DROP TABLE indexed_spans")
+        connection.execute("CREATE TABLE indexed_spans (trace_id TEXT NOT NULL)")
+        connection.execute(
+            "CREATE INDEX indexed_spans_trace ON indexed_spans (trace_id)"
+        )
+
+    restarted = OtlpJsonlStore(store.path)
+
+    assert restarted.get_trace(trace_id)["trace_id"] == trace_id
+    assert [view["trace_id"] for view in restarted.trace_views()] == [trace_id]
+
+
+def test_index_recovery_does_not_hide_invalid_canonical_otlp(tmp_path):
+    store = OtlpJsonlStore(tmp_path / "corrupt-index-invalid-otlp.otlp.jsonl")
+    store.append(_single_span_request("5a" * 16, "5a" * 8, 100))
+    with store.path.open("ab") as handle:
+        handle.write(b'{"futureField":true}\n')
+    store.index_path.write_bytes(store.index_path.read_bytes()[:64])
+
+    with pytest.raises(ValueError, match="invalid OTLP JSONL record at line 2"):
+        OtlpJsonlStore(store.path).trace_views()
+
+
+def test_store_recovers_unterminated_tail_before_rebuild_and_append(tmp_path):
+    store = OtlpJsonlStore(tmp_path / "interrupted.otlp.jsonl")
+    first_trace_id = "61" * 16
+    second_trace_id = "62" * 16
+    store.append(_single_span_request(first_trace_id, "61" * 8, 100))
+    with store.path.open("ab") as handle:
+        handle.write(b'{"resourceSpans": [{"incomplete"')
+
+    restarted = OtlpJsonlStore(store.path)
+    assert [view["trace_id"] for view in restarted.trace_views()] == [first_trace_id]
+    assert restarted.path.read_bytes().endswith(b"\n")
+
+    restarted.append(_single_span_request(second_trace_id, "62" * 8, 200))
+    assert {view["trace_id"] for view in restarted.trace_views()} == {
+        first_trace_id,
+        second_trace_id,
+    }
+
+
+def test_store_reads_complete_read_only_canonical_corpus(tmp_path):
+    store = OtlpJsonlStore(tmp_path / "read-only.otlp.jsonl")
+    trace_id = "69" * 16
+    store.append(_single_span_request(trace_id, "69" * 8, 100))
+    store.path.chmod(0o444)
+
+    try:
+        assert [view["trace_id"] for view in store.trace_views()] == [trace_id]
+        assert len(store.read_requests()) == 1
+    finally:
+        store.path.chmod(0o644)
+
+
+def test_store_reads_complete_unterminated_read_only_corpus(tmp_path):
+    store = OtlpJsonlStore(tmp_path / "read-only-unterminated.otlp.jsonl")
+    trace_id = "6a" * 16
+    store.path.write_text(
+        encode_otlp_json(_single_span_request(trace_id, "6a" * 8, 100)),
+        encoding="utf-8",
+    )
+    original = store.path.read_bytes()
+    store.path.chmod(0o444)
+
+    try:
+        assert [view["trace_id"] for view in store.trace_views()] == [trace_id]
+        assert len(store.read_requests()) == 1
+        assert store.path.read_bytes() == original
+    finally:
+        store.path.chmod(0o644)
+
+
+def test_recovery_preserves_complete_json_with_unknown_otlp_fields(tmp_path):
+    store = OtlpJsonlStore(tmp_path / "future-field.otlp.jsonl")
+    request = json.loads(
+        encode_otlp_json(_single_span_request("6b" * 16, "6b" * 8, 100))
+    )
+    request["futureField"] = {"preserve": True}
+    original = json.dumps(request, separators=(",", ":")).encode()
+    store.path.write_bytes(original)
+
+    with pytest.raises(ValueError, match="invalid OTLP JSONL record"):
+        store.read_requests()
+
+    assert store.path.read_bytes() == original + b"\n"
+
+
+def test_store_preserves_complete_final_record_missing_only_newline(tmp_path):
+    store = OtlpJsonlStore(tmp_path / "missing-delimiter.otlp.jsonl")
+    request = _single_span_request("63" * 16, "63" * 8, 100)
+    canonical_record = encode_otlp_json(request).encode("utf-8")
+    store.path.write_bytes(canonical_record)
+
+    restarted = OtlpJsonlStore(store.path)
+
+    assert restarted.read_requests() == [request]
+    assert restarted.path.read_bytes() == canonical_record + b"\n"
+    assert restarted.get_trace("63" * 16)["trace_id"] == "63" * 16
+
+
+def test_store_rolls_back_canonical_record_when_fsync_fails(tmp_path, monkeypatch):
+    store = OtlpJsonlStore(tmp_path / "failed-write.otlp.jsonl")
+    first_trace_id = "71" * 16
+    second_trace_id = "72" * 16
+    store.append(_single_span_request(first_trace_id, "71" * 8, 100))
+    committed = store.path.read_bytes()
+    original_fsync = os.fsync
+    calls = 0
+
+    def fail_once(file_descriptor):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError("simulated fsync failure")
+        return original_fsync(file_descriptor)
+
+    monkeypatch.setattr("abbrivio.otlp.store.os.fsync", fail_once)
+    with pytest.raises(OSError, match="simulated fsync failure"):
+        store.append(_single_span_request(second_trace_id, "72" * 8, 200))
+
+    assert store.path.read_bytes() == committed
+    assert [view["trace_id"] for view in store.trace_views()] == [first_trace_id]
+
+
+def test_store_serializes_multiple_instances_in_one_process(tmp_path):
+    path = tmp_path / "threaded.otlp.jsonl"
+    worker_count = 6
+    batch_size = 12
+    barrier = threading.Barrier(worker_count)
+
+    def append_batch(namespace: int) -> list[str]:
+        barrier.wait(timeout=10)
+        return _append_store_batch(str(path), namespace, batch_size)
+
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        futures = [executor.submit(append_batch, number) for number in range(1, 7)]
+        expected = {
+            trace_id for future in futures for trace_id in future.result(timeout=30)
+        }
+
+    restarted = OtlpJsonlStore(path)
+    assert len(restarted.read_requests()) == worker_count * batch_size
+    assert {view["trace_id"] for view in restarted.trace_views()} == expected
+    assert all(restarted.get_trace(trace_id) is not None for trace_id in expected)
+
+
+def test_store_serializes_canonical_append_and_index_across_processes(tmp_path):
+    path = tmp_path / "multiprocess.otlp.jsonl"
+    worker_count = 3
+    batch_size = 8
+    context = multiprocessing.get_context("spawn")
+
+    with ProcessPoolExecutor(
+        max_workers=worker_count,
+        mp_context=context,
+    ) as executor:
+        futures = [
+            executor.submit(_append_store_batch, str(path), number, batch_size)
+            for number in range(10, 10 + worker_count)
+        ]
+        expected = {
+            trace_id for future in futures for trace_id in future.result(timeout=60)
+        }
+
+    restarted = OtlpJsonlStore(path)
+    requests = restarted.read_requests()
+    assert len(requests) == worker_count * batch_size
+    assert {
+        span.trace_id.hex()
+        for request in requests
+        for resource in request.resource_spans
+        for scope in resource.scope_spans
+        for span in scope.spans
+    } == expected
+    assert {view["trace_id"] for view in restarted.trace_views()} == expected
+
+
+def test_projection_has_no_interaction_id_requirement():
+    traces = project_requests([_complete_request()])
+
+    assert {trace.trace_id for trace in traces} == {TRACE_ID, OTHER_TRACE_ID}
+    ordinary = next(trace for trace in traces if trace.trace_id == OTHER_TRACE_ID)
+    assert ordinary.spans[0].name == "ordinary.operation"
+    assert ordinary.spans[0].resource_attributes["service.name"] == "ordinary-service"
+
+
+def test_sdk_exporter_preserves_real_resource_scope_events_and_hierarchy(tmp_path):
+    store = OtlpJsonlStore(tmp_path / "sdk.otlp.jsonl")
+    exporter = OtlpJsonlSpanExporter(store)
+    provider = TracerProvider(
+        resource=Resource.create(
+            {"service.name": "sdk-service"},
+            schema_url="https://example.test/resource",
+        )
+    )
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    tracer = provider.get_tracer(
+        "sdk.instrumentation",
+        "9.8.7",
+        schema_url="https://example.test/scope",
+        attributes={"scope.attribute": "sdk-preserved"},
+    )
+
+    with tracer.start_as_current_span("root", kind=SpanKind.SERVER) as root:
+        trace_id = format(root.get_span_context().trace_id, "032x")
+        root.set_attribute("gen_ai.operation.name", "chat")
+        root.add_event("generated", {"attempt": 1})
+        with tracer.start_as_current_span("child", kind=SpanKind.CLIENT):
+            pass
+    provider.shutdown()
+
+    trace = store.get_trace(trace_id)
+    assert trace is not None
+    assert trace["resources"][0]["schema_url"] == "https://example.test/resource"
+    assert trace["scopes"][0]["schema_url"] == "https://example.test/scope"
+    assert trace["scopes"][0]["attributes"] == {"scope.attribute": "sdk-preserved"}
+    by_name = {span["name"]: span for span in trace["spans"]}
+    assert by_name["child"]["parent_span_id"] == by_name["root"]["span_id"]
+    assert by_name["root"]["events"][0]["name"] == "generated"
+
+
+def test_otlp_http_router_accepts_protobuf_json_and_gzip(tmp_path):
+    store = OtlpJsonlStore(tmp_path / "received.otlp.jsonl")
+    app = FastAPI()
+    app.include_router(create_otlp_router(store))
+    client = TestClient(app)
+    request = _complete_request()
+
+    protobuf_response = client.post(
+        "/v1/traces",
+        content=gzip.compress(encode_otlp_protobuf(request)),
+        headers={
+            "content-type": "application/x-protobuf",
+            "content-encoding": "gzip",
+        },
+    )
+    assert protobuf_response.status_code == 200
+    assert protobuf_response.headers["content-type"].startswith(
+        "application/x-protobuf"
+    )
+    response_message = ExportTraceServiceResponse()
+    response_message.ParseFromString(protobuf_response.content)
+
+    json_response = client.post(
+        "/v1/traces",
+        content=encode_otlp_json(request),
+        headers={"content-type": "application/json"},
+    )
+    assert json_response.status_code == 200
+    assert json_response.json() == {}
+    assert store.read_requests() == [request, request]
+
+    assert (
+        client.post(
+            "/v1/traces",
+            content=b"not otlp",
+            headers={"content-type": "application/x-protobuf"},
+        ).status_code
+        == 400
+    )
+    assert (
+        client.post(
+            "/v1/traces",
+            content=b"{}",
+            headers={"content-type": "text/plain"},
+        ).status_code
+        == 415
+    )
+
+
+def test_otlp_http_router_offloads_gzip_and_decode_from_event_loop(
+    tmp_path, monkeypatch
+):
+    store = OtlpJsonlStore(tmp_path / "offloaded.otlp.jsonl")
+    app = FastAPI()
+    app.include_router(create_otlp_router(store))
+    decoder_threads: list[int] = []
+    original_decode = otlp_receiver_module._decode_body
+
+    def recording_decode(*args, **kwargs):
+        decoder_threads.append(threading.get_ident())
+        return original_decode(*args, **kwargs)
+
+    monkeypatch.setattr(otlp_receiver_module, "_decode_body", recording_decode)
+
+    async def send_request() -> tuple[int, httpx.Response]:
+        event_loop_thread = threading.get_ident()
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+        ) as client:
+            response = await client.post(
+                "/v1/traces",
+                content=gzip.compress(encode_otlp_protobuf(_complete_request())),
+                headers={
+                    "content-type": "application/x-protobuf",
+                    "content-encoding": "gzip",
+                },
+            )
+        return event_loop_thread, response
+
+    event_loop_thread, response = asyncio.run(send_request())
+
+    assert response.status_code == 200
+    assert decoder_threads
+    assert all(thread_id != event_loop_thread for thread_id in decoder_threads)
+    assert len(store.read_requests()) == 1
+
+
+def test_otlp_http_router_bounds_decompressed_payload(tmp_path):
+    store = OtlpJsonlStore(tmp_path / "bounded.otlp.jsonl")
+    app = FastAPI()
+    app.include_router(create_otlp_router(store, max_body_bytes=32))
+    client = TestClient(app)
+
+    response = client.post(
+        "/v1/traces",
+        content=gzip.compress(b"{" + b" " * 100 + b"}"),
+        headers={
+            "content-type": "application/json",
+            "content-encoding": "gzip",
+        },
+    )
+
+    assert response.status_code == 413
+    assert not store.path.exists()
+
+
+def test_otlp_http_router_bounds_stream_even_with_understated_length(tmp_path):
+    store = OtlpJsonlStore(tmp_path / "stream-bounded.otlp.jsonl")
+    app = FastAPI()
+    app.include_router(create_otlp_router(store, max_body_bytes=32))
+
+    response = TestClient(app).post(
+        "/v1/traces",
+        content=b"x" * 33,
+        headers={
+            "content-type": "application/x-protobuf",
+            "content-length": "1",
+        },
+    )
+
+    assert response.status_code == 413
+    assert not store.path.exists()
+
+
+def test_otlp_http_router_rejects_invalid_ids_before_persisting(tmp_path):
+    store = OtlpJsonlStore(tmp_path / "invalid-ids.otlp.jsonl")
+    app = FastAPI()
+    app.include_router(create_otlp_router(store))
+    request = _complete_request()
+    request.resource_spans[0].scope_spans[0].spans[0].span_id = b"short"
+
+    response = TestClient(app).post(
+        "/v1/traces",
+        content=request.SerializeToString(),
+        headers={"content-type": "application/x-protobuf"},
+    )
+
+    assert response.status_code == 400
+    assert not store.path.exists()
+
+
+@pytest.mark.parametrize("nested", [False, True], ids=["root", "nested"])
+def test_otlp_http_router_rejects_unknown_protobuf_fields_before_persisting(
+    tmp_path,
+    nested,
+):
+    store = OtlpJsonlStore(tmp_path / f"unknown-{nested}.otlp.jsonl")
+    app = FastAPI()
+    app.include_router(create_otlp_router(store))
+
+    response = TestClient(app).post(
+        "/v1/traces",
+        content=_request_with_unknown_field(nested=nested).SerializeToString(),
+        headers={"content-type": "application/x-protobuf"},
+    )
+
+    assert response.status_code == 400
+    assert not store.path.exists()

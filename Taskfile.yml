@@ -1,0 +1,16 @@
+version: "3"
+
+tasks:
+  test:
+    cmds:
+      - uv run --extra test pytest -q
+
+  lint:
+    cmds:
+      - uv run --extra test ruff check .
+      - uv run --extra test ruff format --check .
+
+  server:
+    desc: Run the local Chorus UI and OTLP receiver
+    cmds:
+      - uv run chorus --data-dir "${CHORUS_DATA_DIR:-.chorus}" --port "${CHORUS_PORT:-8010}"

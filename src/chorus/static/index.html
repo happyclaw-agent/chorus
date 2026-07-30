@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Chorus</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #10151c;
+        --panel: #171e28;
+        --line: #2b3543;
+        --text: #ecf1f7;
+        --muted: #9aa8b9;
+        --accent: #69d6b5;
+        --warn: #f0bd68;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: radial-gradient(circle at top right, #19352f 0, var(--bg) 35%);
+        color: var(--text);
+        font: 15px/1.5 ui-sans-serif, system-ui, sans-serif;
+      }
+      main { width: min(1180px, calc(100% - 32px)); margin: 36px auto 72px; }
+      header { display: flex; justify-content: space-between; gap: 24px; align-items: end; }
+      h1, h2 { margin: 0; letter-spacing: -0.03em; }
+      h1 { font-size: 36px; }
+      h2 { font-size: 20px; margin-bottom: 14px; }
+      .lede, .muted { color: var(--muted); }
+      .lede { max-width: 650px; margin: 8px 0 0; }
+      .pill { border: 1px solid var(--line); border-radius: 99px; padding: 7px 11px; color: var(--accent); }
+      .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px; margin: 28px 0; }
+      .card, section { border: 1px solid var(--line); border-radius: 14px; background: color-mix(in srgb, var(--panel) 94%, transparent); }
+      .card { padding: 15px; min-height: 92px; }
+      .value { display: block; margin-top: 8px; font-size: 25px; font-weight: 700; }
+      section { margin-top: 18px; padding: 20px; overflow: hidden; }
+      table { width: 100%; border-collapse: collapse; }
+      th, td { padding: 11px 9px; border-top: 1px solid var(--line); text-align: left; vertical-align: top; }
+      th { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .06em; }
+      code { font: 12px/1.4 ui-monospace, SFMono-Regular, monospace; color: #b8c8da; }
+      button { border: 1px solid #438e79; background: #173b32; color: var(--text); border-radius: 8px; padding: 7px 10px; cursor: pointer; }
+      button:hover { border-color: var(--accent); }
+      .status { min-height: 24px; color: var(--warn); }
+      .empty { padding: 28px 8px; color: var(--muted); }
+      .two { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+      @media (max-width: 900px) { .grid { grid-template-columns: repeat(3, 1fr); } .two { grid-template-columns: 1fr; } }
+      @media (max-width: 560px) { .grid { grid-template-columns: repeat(2, 1fr); } header { display: block; } .pill { display: inline-block; margin-top: 14px; } }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <h1>Chorus</h1>
+          <p class="lede">OTLP-native visibility for traces, feedback, cost, latency, and evaluations.</p>
+        </div>
+        <span class="pill" id="health">connecting</span>
+      </header>
+
+      <div class="grid" id="summary"></div>
+
+      <section>
+        <h2>Trace runs</h2>
+        <p class="status" id="status"></p>
+        <div id="traces"><p class="empty">No OTLP traces received yet.</p></div>
+      </section>
+
+      <div class="two">
+        <section>
+          <h2>Evaluation activity</h2>
+          <div id="evals"><p class="empty">No evaluation runs yet.</p></div>
+        </section>
+        <section>
+          <h2>Evaluation catalog</h2>
+          <div id="catalog"><p class="empty">No catalog configured.</p></div>
+        </section>
+      </div>
+    </main>
+
+    <script>
+      const esc = (value) => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+      const compact = (value, size = 12) => value ? `${String(value).slice(0, size)}…` : "—";
+      let tokenPrompt = null;
+      const requestApiToken = async () => {
+        const stored = window.sessionStorage.getItem("chorus.apiToken");
+        if (stored) return stored;
+        if (!tokenPrompt) {
+          tokenPrompt = Promise.resolve().then(() => window.prompt("Chorus API token:")).then(value => {
+            if (value) window.sessionStorage.setItem("chorus.apiToken", value);
+            return value || "";
+          }).finally(() => { tokenPrompt = null; });
+        }
+        return tokenPrompt;
+      };
+      const apiFetch = async (url, options = {}) => {
+        const send = (token) => {
+          const headers = new Headers(options.headers || {});
+          if (token) headers.set("authorization", `Bearer ${token}`);
+          return fetch(url, {...options, headers});
+        };
+        const stored = window.sessionStorage.getItem("chorus.apiToken") || "";
+        let response = await send(stored);
+        if (response.status !== 401) return response;
+        window.sessionStorage.removeItem("chorus.apiToken");
+        const token = await requestApiToken();
+        return token ? send(token) : response;
+      };
+      const formatCost = (values) => {
+        const entries = Object.entries(values || {});
+        if (!entries.length) return "unknown";
+        if (entries.length > 1) return `${entries.length} currencies`;
+        return `${entries[0][0]} ${Number(entries[0][1]).toFixed(6)}`;
+      };
+      const cards = (summary) => [
+        ["Trace runs", summary.counts.trace_runs],
+        ["P95 latency", summary.latency_ms.p95 == null ? "—" : `${summary.latency_ms.p95} ms`],
+        ["Total tokens", summary.usage.total_tokens],
+        ["Known cost", formatCost(summary.cost.by_currency)],
+        ["Cost coverage", summary.cost.coverage == null ? "—" : `${(summary.cost.coverage * 100).toFixed(0)}%`],
+        ["Feedback", summary.counts.feedback],
+        ["Eval cases", summary.counts.eval_cases],
+        ["Latest eval", summary.latest_eval ? `${summary.latest_eval.passed}/${summary.latest_eval.total}` : "—"],
+      ];
+
+      async function promote(traceId, rootSpanId) {
+        const status = document.querySelector("#status");
+        let body = { root_span_id: rootSpanId || null };
+        let response = await apiFetch(`/api/traces/${traceId}/promote`, {method: "POST", headers: {"content-type":"application/json"}, body: JSON.stringify(body)});
+        if (response.status === 422) {
+          const inputText = window.prompt("Input was not retained. Enter the evaluation input:");
+          if (inputText === null) return;
+          const actualOutput = window.prompt("Output was not retained. Enter the observed output:");
+          if (actualOutput === null) return;
+          body = {...body, input_text: inputText, actual_output: actualOutput};
+          response = await apiFetch(`/api/traces/${traceId}/promote`, {method: "POST", headers: {"content-type":"application/json"}, body: JSON.stringify(body)});
+        }
+        const payload = await response.json();
+        status.textContent = response.ok ? `Promoted ${payload.name}` : (payload.detail || "Promotion failed");
+        if (response.ok) await refresh();
+      }
+
+      function renderTraces(rows) {
+        if (!rows.length) return '<p class="empty">No OTLP traces received yet.</p>';
+        return `<table><thead><tr><th>Trace</th><th>Root</th><th>Services</th><th>Spans</th><th>Duration</th><th>Models</th><th></th></tr></thead><tbody>${rows.map(row => {
+          const services = [...new Set((row.resources || []).map(r => r.attributes?.["service.name"]).filter(Boolean))];
+          const models = [...new Set((row.spans || []).flatMap(s => [s.attributes?.["gen_ai.response.model"], s.attributes?.["gen_ai.request.model"]]).filter(Boolean))];
+          return `<tr><td><code title="${esc(row.trace_id)}">${esc(compact(row.trace_id))}</code></td><td><code>${esc(compact(row.root_span_id, 8))}</code></td><td>${esc(services.join(", ") || "—")}</td><td>${row.spans.length}</td><td>${row.latency_ms == null ? "—" : `${row.latency_ms} ms`}</td><td>${esc(models.join(", ") || "—")}</td><td><button onclick="promote('${esc(row.trace_id)}','${esc(row.root_span_id || "")}')">Promote</button></td></tr>`;
+        }).join("")}</tbody></table>`;
+      }
+
+      async function refresh() {
+        const [health, summary, traces, evals] = await Promise.all([
+          apiFetch("/api/health").then(r => r.json()),
+          apiFetch("/api/summary").then(r => r.json()),
+          apiFetch("/api/traces").then(r => r.json()),
+          apiFetch("/api/evals").then(r => r.json()),
+        ]);
+        document.querySelector("#health").textContent = health.ok ? "OTLP receiver ready" : "unavailable";
+        document.querySelector("#summary").innerHTML = cards(summary).map(([label, value]) => `<div class="card"><span class="muted">${esc(label)}</span><strong class="value">${esc(value)}</strong></div>`).join("");
+        document.querySelector("#traces").innerHTML = renderTraces(traces.traces || []);
+        document.querySelector("#evals").innerHTML = (evals.runs || []).length ? `<table><thead><tr><th>Run</th><th>Model</th><th>Pass</th></tr></thead><tbody>${evals.runs.map(run => `<tr><td>${esc(run.source)}</td><td>${esc(run.model)}</td><td>${esc(run.passed)}/${esc(run.total)}</td></tr>`).join("")}</tbody></table>` : '<p class="empty">No evaluation runs yet.</p>';
+        document.querySelector("#catalog").innerHTML = (evals.catalog || []).length ? `<table><thead><tr><th>Name</th><th>Group</th></tr></thead><tbody>${evals.catalog.map(item => `<tr><td>${esc(item.name)}</td><td>${esc(item.group || "—")}</td></tr>`).join("")}</tbody></table>` : '<p class="empty">No catalog configured.</p>';
+      }
+
+      refresh().catch(error => { document.querySelector("#health").textContent = "unavailable"; document.querySelector("#status").textContent = error.message; });
+      window.setInterval(refresh, 5000);
+    </script>
+  </body>
+</html>

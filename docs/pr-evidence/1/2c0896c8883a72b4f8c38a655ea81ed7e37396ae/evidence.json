@@ -1,0 +1,37 @@
+{
+  "manifestVersion": 1,
+  "generatedAt": "2026-07-30T14:24:30.580360Z",
+  "repository": "git@github.com:happyclaw-agent/chorus.git",
+  "prUrl": "https://github.com/happyclaw-agent/chorus/pull/1",
+  "demoedCommit": "2c0896c8883a72b4f8c38a655ea81ed7e37396ae",
+  "kind": "browser-and-api",
+  "claims": [
+    "The official OpenTelemetry OTLP HTTP exporter sends an ordinary root and GenAI child into the real Chorus receiver",
+    "The public HttpSidecarWriter sends trace-linked retained content and feedback through the real generic sidecar endpoint",
+    "Chorus displays trace latency, token usage, currency-aware known cost, pricing coverage, feedback, and model identity",
+    "Root-row promotion selects the GenAI child and persists an evaluation case linked to the real trace, root, and child span IDs",
+    "With CHORUS_API_TOKEN configured, unauthenticated quality API and sidecar requests return 401 while authenticated OTLP, sidecar, and read requests succeed"
+  ],
+  "launchCommands": [
+    "CHORUS_DATA_DIR=/tmp/chorus-pr1-2c0896c.ixRHZL uv run uvicorn chorus.app:create_app --factory --host 127.0.0.1 --port 8114",
+    "CHORUS_DATA_DIR=/tmp/chorus-auth-2c0896c.YpOaw2 CHORUS_API_TOKEN=<redacted> uv run uvicorn chorus.app:create_app --factory --host 127.0.0.1 --port 8115"
+  ],
+  "demoCommands": [
+    "Official OpenTelemetry SDK plus OTLPSpanExporter to http://127.0.0.1:8114/v1/traces, HttpSidecarWriter to http://127.0.0.1:8114, then browser Promote",
+    "Authenticated OTLPSpanExporter and HttpSidecarWriter to port 8115, followed by unauthenticated 401 and authenticated 200 API probes"
+  ],
+  "isolation": "Dedicated /tmp corpora, synthetic evidence-agent data, localhost only, no production services or message delivery",
+  "limitations": [
+    "Local receiver path only; no production deployment or external collector"
+  ],
+  "artifacts": [
+    {
+      "path": "/Users/happyclaw/worktrees/chorus-otlp-repo/docs/pr-evidence/1/2c0896c8883a72b4f8c38a655ea81ed7e37396ae/chorus-otlp-sidecar-demo.webm",
+      "name": "chorus-otlp-sidecar-demo.webm",
+      "bytes": 139975,
+      "sha256": "0db38aaac1dfadf11099ae77f72916d4862f7aa71e9209b90d6294d06c7972f1",
+      "mimeType": "video/webm",
+      "durationSeconds": 2.76
+    }
+  ]
+}
