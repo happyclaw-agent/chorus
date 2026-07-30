@@ -1,8 +1,0 @@
-{"version": 2, "width": 80, "height": 24, "timestamp": 1785434990, "idle_time_limit": 2.0, "env": {"SHELL": "/bin/zsh", "TERM": "dumb"}, "title": "Chorus promotion and feedback at 13bf258"}
-[0.153865, "o", "Chorus promotion evidence\r\ncommit: 13bf25845ce9abd75ed09b7f7f4b0b4cb6f81a77\r\n"]
-[0.154171, "o", "isolation: localhost receiver, synthetic content, dedicated /tmp corpus\r\n"]
-[0.249096, "o", "1/4 exporting a real OTLP root and GenAI child\r\n"]
-[0.791394, "o", "2/4 appending trace-linked provider and finalized application content\r\n"]
-[1.36997, "o", "3/4 promoting the root and then the explicitly selected child\r\n"]
-[1.917827, "o", "4/4 verifying promotion precedence, provenance, and canonical OTLP\r\n"]
-[2.425863, "o", "{\r\n  \"canonical_otlp_span_count\": 2,\r\n  \"child_promotion\": \"provider sidecar draft\",\r\n  \"logical_feedback_count_after_retry\": 1,\r\n  \"model_provenance\": \"evidence-model\",\r\n  \"root_promotion\": \"application final\",\r\n  \"trace_id\": \"741e4a18630de0443efc959500ea4b29\",\r\n  \"version_provenance\": \"13bf25845ce9abd75ed09b7f7f4b0b4cb6f81a77\"\r\n}\r\nPASS: finalized root content wins; explicit child selection remains scoped\r\n"]

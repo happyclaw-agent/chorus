@@ -1,0 +1,44 @@
+{
+  "manifestVersion": 1,
+  "generatedAt": "2026-07-30T18:22:21.997473Z",
+  "repository": "git@github.com:happyclaw-agent/chorus.git",
+  "prUrl": "https://github.com/happyclaw-agent/chorus/pull/2",
+  "demoedCommit": "e92913ebe0029eadb78a8c08bccf2c9a30dee863",
+  "kind": "terminal",
+  "claims": [
+    "Official OpenTelemetry OTLP/HTTP preserves the root and provider child as two canonical spans",
+    "Default root promotion selects finalized root-linked application content while explicit child promotion remains scoped to that child",
+    "Repeated nonempty feedback IDs collapse to the latest logical event without rewriting raw append-only JSONL",
+    "Feedback records without an ID remain independently visible in summary and trace detail"
+  ],
+  "launchCommands": [
+    "uv run chorus --data-dir /tmp/chorus-pr2-current.Yo7uWu --host 127.0.0.1 --port 8118"
+  ],
+  "demoCommands": [
+    "sh /tmp/chorus-pr2-demo.sh"
+  ],
+  "isolation": "Dedicated /tmp corpus, synthetic evidence-provider content, localhost only, no production services, customer records, external models, or message delivery",
+  "limitations": [
+    "Local OTLP receiver and promotion API only; this does not exercise a remote collector or production deployment"
+  ],
+  "artifacts": [
+    {
+      "path": "/private/tmp/chorus-pr2-evidence-e92913e.l0yZxE/chorus-pr2-e92913e.cast",
+      "name": "chorus-pr2-e92913e.cast",
+      "bytes": 1289,
+      "sha256": "3e2a129d581db3df38aa3b7f6c7e9c353081bffe0866a19237b8c6a52f9f6400",
+      "mimeType": "application/octet-stream",
+      "durationSeconds": 2.254227,
+      "outputEvents": 7,
+      "terminalWidth": 80,
+      "terminalHeight": 24
+    },
+    {
+      "path": "/private/tmp/chorus-pr2-evidence-e92913e.l0yZxE/chorus-pr2-e92913e.svg",
+      "name": "chorus-pr2-e92913e.svg",
+      "bytes": 7104,
+      "sha256": "042a83020a542e069b70557aaa44948312b6d8f63a49275ae3db8299ee809bcd",
+      "mimeType": "image/svg+xml"
+    }
+  ]
+}
