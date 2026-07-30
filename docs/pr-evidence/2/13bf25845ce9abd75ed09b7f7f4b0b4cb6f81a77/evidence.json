@@ -1,15 +1,15 @@
 {
   "manifestVersion": 1,
-  "generatedAt": "2026-07-30T18:03:14.867618Z",
+  "generatedAt": "2026-07-30T18:09:54.251509Z",
   "repository": "git@github.com:happyclaw-agent/chorus.git",
   "prUrl": "https://github.com/happyclaw-agent/chorus/pull/2",
-  "demoedCommit": "c1bc01bffa790c92c85cbc93c0d671d43a25ef9b",
+  "demoedCommit": "13bf25845ce9abd75ed09b7f7f4b0b4cb6f81a77",
   "kind": "terminal",
   "claims": [
     "Official OpenTelemetry OTLP/HTTP preserves the root and provider child as two canonical spans",
     "Default root promotion selects the finalized root-linked application content even when the provider span contains an older draft",
     "Explicit child promotion remains scoped to the latest selected child content",
-    "Model and application-version provenance still come from the selected OTLP span and resource"
+    "Repeated feedback IDs produce one logical event with the latest value in summary and trace detail"
   ],
   "launchCommands": [
     "CHORUS_DATA_DIR=<dedicated-temp-corpus> uv run uvicorn chorus.app:create_app --factory --host 127.0.0.1 --port 8118"
@@ -19,25 +19,25 @@
   ],
   "isolation": "Dedicated /tmp corpus, synthetic evidence-provider content, localhost only, no production services, customer records, external models, or message delivery",
   "limitations": [
-    "Local OTLP receiver and promotion API only; no production deployment or external collector"
+    "Local OTLP receiver and promotion API only; raw append-only sidecars retain retries while logical dashboard views deduplicate by feedback_id"
   ],
   "artifacts": [
     {
-      "path": "/private/tmp/chorus-pr2-evidence-c1bc01b/chorus-root-promotion.cast",
+      "path": "/private/tmp/chorus-pr2-evidence-13bf258/chorus-root-promotion.cast",
       "name": "chorus-root-promotion.cast",
-      "bytes": 1121,
-      "sha256": "a3a70308db02a3048428aec64bb1da74ea12e6fa4b53a519dbd77787c2784fc8",
+      "bytes": 1198,
+      "sha256": "27daecd526722285bbe14aa7299272eae5f02356f8cb6c2d71a47c70586d6feb",
       "mimeType": "application/octet-stream",
-      "durationSeconds": 2.3763,
-      "outputEvents": 6,
+      "durationSeconds": 2.425863,
+      "outputEvents": 7,
       "terminalWidth": 80,
       "terminalHeight": 24
     },
     {
-      "path": "/private/tmp/chorus-pr2-evidence-c1bc01b/chorus-root-promotion.svg",
+      "path": "/private/tmp/chorus-pr2-evidence-13bf258/chorus-root-promotion.svg",
       "name": "chorus-root-promotion.svg",
-      "bytes": 6525,
-      "sha256": "f20dafd5a7f5a34656f585fe7a8e8ac56ef3af53ea44f3f4ecc3288f98b906a7",
+      "bytes": 6794,
+      "sha256": "e5ecefd9e57373323232a126792f0581a8fd775b4bd483c26c3fd8ac8db91392",
       "mimeType": "image/svg+xml"
     }
   ]
