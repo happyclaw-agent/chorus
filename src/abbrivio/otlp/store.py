@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import sqlite3
 import threading
-from collections.abc import Iterator
+from collections import defaultdict
+from collections.abc import Iterator, Sequence
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -14,21 +17,42 @@ from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
 from abbrivio.otlp.codec import TraceData, decode_otlp_json, encode_otlp_json
 from abbrivio.otlp.projection import project_requests
 
+_INDEX_SCHEMA_VERSION = "1"
+
+
+def _sortable_nanos(value: int) -> str:
+    return f"{value:020d}"
+
 
 class OtlpJsonlStore:
     """Stores exactly one canonical OTLP export request per non-empty line."""
 
     def __init__(self, path: str | Path):
         self.path = Path(path).expanduser().resolve()
+        self.index_path = Path(f"{self.path}.index.sqlite3")
         self._lock = threading.RLock()
 
     def append(self, request: TraceData) -> None:
         payload = encode_otlp_json(request)
+        indexed_request = decode_otlp_json(payload)
+        encoded = (payload + "\n").encode("utf-8")
         with self._lock:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            with self.path.open("a", encoding="utf-8") as handle:
-                handle.write(payload + "\n")
-                handle.flush()
+            with closing(self._open_index()) as connection:
+                self._ensure_index(connection)
+                with self.path.open("ab") as handle:
+                    offset = handle.tell()
+                    handle.write(encoded)
+                    handle.flush()
+                with connection:
+                    affected = self._index_request(
+                        connection,
+                        indexed_request,
+                        line_offset=offset,
+                        line_length=len(encoded),
+                    )
+                    self._replace_roots(connection, affected)
+                    self._write_index_fingerprint(connection)
 
     def iter_requests(self) -> Iterator[ExportTraceServiceRequest]:
         if not self.path.exists():
@@ -56,23 +80,303 @@ class OtlpJsonlStore:
 
     def get_trace(self, trace_id: str) -> dict[str, Any] | None:
         normalized = trace_id.strip().lower()
-        for trace in project_requests(self.iter_requests()):
+        with self._lock, closing(self._open_index()) as connection:
+            self._ensure_index(connection)
+            requests = self._read_indexed_requests(connection, [normalized])
+        for trace in project_requests(requests):
             if trace.trace_id == normalized:
                 return trace.to_dict()
         return None
 
-    def trace_views(self) -> list[dict[str, Any]]:
-        views = [
-            view
-            for trace in project_requests(self.iter_requests())
+    def trace_views(self, limit: int | None = None) -> list[dict[str, Any]]:
+        """Return recent root views from a disposable index over canonical OTLP.
+
+        The index only stores span locations and root ordering metadata. The views
+        themselves are always reconstructed from the canonical OTLP JSONL records.
+        """
+        if limit is not None and limit < 0:
+            raise ValueError("limit must be non-negative")
+        if limit == 0:
+            return []
+
+        with self._lock, closing(self._open_index()) as connection:
+            self._ensure_index(connection)
+            query = (
+                "SELECT trace_id, root_span_id FROM trace_roots "
+                "ORDER BY start_ns DESC, trace_id DESC, root_span_id DESC"
+            )
+            parameters: tuple[int, ...] = ()
+            if limit is not None:
+                query += " LIMIT ?"
+                parameters = (limit,)
+            selected_roots = list(connection.execute(query, parameters))
+            if not selected_roots:
+                return []
+            trace_ids = list(dict.fromkeys(row[0] for row in selected_roots))
+            requests = self._read_indexed_requests(connection, trace_ids)
+
+        by_root = {
+            (str(view["trace_id"]), str(view["root_span_id"] or "")): view
+            for trace in project_requests(requests)
             for view in trace.root_views()
+        }
+        return [
+            by_root[(trace_id, root_span_id)]
+            for trace_id, root_span_id in selected_roots
         ]
-        return sorted(
-            views,
-            key=lambda view: (
-                int(view["start_time_unix_nano"]),
-                str(view["trace_id"]),
-                str(view["root_span_id"] or ""),
-            ),
-            reverse=True,
+
+    def _open_index(self) -> sqlite3.Connection:
+        self.index_path.parent.mkdir(parents=True, exist_ok=True)
+        connection = sqlite3.connect(self.index_path)
+        connection.execute("PRAGMA journal_mode=WAL")
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS index_metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+            """
         )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS indexed_spans (
+                trace_id TEXT NOT NULL,
+                span_id TEXT NOT NULL,
+                parent_span_id TEXT,
+                start_ns TEXT NOT NULL,
+                end_ns TEXT NOT NULL,
+                line_offset INTEGER NOT NULL,
+                line_length INTEGER NOT NULL,
+                resource_index INTEGER NOT NULL,
+                scope_index INTEGER NOT NULL,
+                span_index INTEGER NOT NULL,
+                PRIMARY KEY (trace_id, span_id)
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS indexed_spans_trace
+            ON indexed_spans (trace_id)
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS trace_roots (
+                trace_id TEXT NOT NULL,
+                root_span_id TEXT NOT NULL,
+                start_ns TEXT NOT NULL,
+                PRIMARY KEY (trace_id, root_span_id)
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS trace_roots_recent
+            ON trace_roots (start_ns DESC, trace_id DESC, root_span_id DESC)
+            """
+        )
+        return connection
+
+    def _canonical_fingerprint(self) -> dict[str, str]:
+        if not self.path.exists():
+            return {
+                "canonical_exists": "0",
+                "canonical_size": "0",
+                "canonical_mtime_ns": "0",
+                "canonical_inode": "0",
+            }
+        stat = self.path.stat()
+        return {
+            "canonical_exists": "1",
+            "canonical_size": str(stat.st_size),
+            "canonical_mtime_ns": str(stat.st_mtime_ns),
+            "canonical_inode": str(stat.st_ino),
+        }
+
+    def _metadata(self, connection: sqlite3.Connection) -> dict[str, str]:
+        return dict(connection.execute("SELECT key, value FROM index_metadata"))
+
+    def _write_index_fingerprint(self, connection: sqlite3.Connection) -> None:
+        values = {
+            "schema_version": _INDEX_SCHEMA_VERSION,
+            **self._canonical_fingerprint(),
+        }
+        connection.executemany(
+            """
+            INSERT INTO index_metadata (key, value) VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
+            values.items(),
+        )
+
+    def _ensure_index(self, connection: sqlite3.Connection) -> None:
+        expected = {
+            "schema_version": _INDEX_SCHEMA_VERSION,
+            **self._canonical_fingerprint(),
+        }
+        metadata = self._metadata(connection)
+        if all(metadata.get(key) == value for key, value in expected.items()):
+            return
+        self._rebuild_index(connection)
+
+    def _rebuild_index(self, connection: sqlite3.Connection) -> None:
+        affected: set[str] = set()
+        with connection:
+            connection.execute("DELETE FROM indexed_spans")
+            connection.execute("DELETE FROM trace_roots")
+            connection.execute("DELETE FROM index_metadata")
+            if self.path.exists():
+                with self.path.open("rb") as handle:
+                    line_number = 0
+                    while line := handle.readline():
+                        line_number += 1
+                        if not line.strip():
+                            continue
+                        offset = handle.tell() - len(line)
+                        try:
+                            request = decode_otlp_json(line)
+                        except Exception as error:
+                            raise ValueError(
+                                f"invalid OTLP JSONL record at line {line_number}"
+                            ) from error
+                        affected.update(
+                            self._index_request(
+                                connection,
+                                request,
+                                line_offset=offset,
+                                line_length=len(line),
+                            )
+                        )
+            self._replace_roots(connection, affected)
+            self._write_index_fingerprint(connection)
+
+    def _index_request(
+        self,
+        connection: sqlite3.Connection,
+        request: ExportTraceServiceRequest,
+        *,
+        line_offset: int,
+        line_length: int,
+    ) -> set[str]:
+        affected: set[str] = set()
+        for resource_index, resource_spans in enumerate(request.resource_spans):
+            for scope_index, scope_spans in enumerate(resource_spans.scope_spans):
+                for span_index, span in enumerate(scope_spans.spans):
+                    trace_id = span.trace_id.hex()
+                    affected.add(trace_id)
+                    connection.execute(
+                        """
+                        INSERT INTO indexed_spans (
+                            trace_id, span_id, parent_span_id, start_ns, end_ns,
+                            line_offset, line_length, resource_index, scope_index,
+                            span_index
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(trace_id, span_id) DO UPDATE SET
+                            parent_span_id = excluded.parent_span_id,
+                            start_ns = excluded.start_ns,
+                            end_ns = excluded.end_ns,
+                            line_offset = excluded.line_offset,
+                            line_length = excluded.line_length,
+                            resource_index = excluded.resource_index,
+                            scope_index = excluded.scope_index,
+                            span_index = excluded.span_index
+                        """,
+                        (
+                            trace_id,
+                            span.span_id.hex(),
+                            span.parent_span_id.hex() if span.parent_span_id else None,
+                            _sortable_nanos(int(span.start_time_unix_nano)),
+                            _sortable_nanos(int(span.end_time_unix_nano)),
+                            line_offset,
+                            line_length,
+                            resource_index,
+                            scope_index,
+                            span_index,
+                        ),
+                    )
+        return affected
+
+    def _replace_roots(
+        self, connection: sqlite3.Connection, trace_ids: Sequence[str] | set[str]
+    ) -> None:
+        for trace_id in trace_ids:
+            spans = list(
+                connection.execute(
+                    """
+                    SELECT span_id, parent_span_id, start_ns
+                    FROM indexed_spans WHERE trace_id = ?
+                    """,
+                    (trace_id,),
+                )
+            )
+            known_ids = {row[0] for row in spans}
+            roots = [
+                (row[0], row[2])
+                for row in spans
+                if not row[1] or row[1] not in known_ids
+            ]
+            if not roots and spans:
+                roots = [("", min(row[2] for row in spans))]
+            connection.execute(
+                "DELETE FROM trace_roots WHERE trace_id = ?", (trace_id,)
+            )
+            connection.executemany(
+                """
+                INSERT INTO trace_roots (trace_id, root_span_id, start_ns)
+                VALUES (?, ?, ?)
+                """,
+                (
+                    (trace_id, root_span_id, start_ns)
+                    for root_span_id, start_ns in roots
+                ),
+            )
+
+    def _read_indexed_requests(
+        self, connection: sqlite3.Connection, trace_ids: Sequence[str]
+    ) -> list[ExportTraceServiceRequest]:
+        if not trace_ids or not self.path.exists():
+            return []
+
+        rows: list[tuple[Any, ...]] = []
+        for offset in range(0, len(trace_ids), 500):
+            chunk = trace_ids[offset : offset + 500]
+            placeholders = ",".join("?" for _ in chunk)
+            rows.extend(
+                connection.execute(
+                    """
+                    SELECT line_offset, line_length, resource_index, scope_index,
+                           span_index
+                    FROM indexed_spans
+                    WHERE trace_id IN ("""
+                    + placeholders
+                    + ")",
+                    tuple(chunk),
+                )
+            )
+
+        locations: dict[int, list[tuple[int, int, int, int]]] = defaultdict(list)
+        for line_offset, line_length, resource_index, scope_index, span_index in rows:
+            locations[line_offset].append(
+                (line_length, resource_index, scope_index, span_index)
+            )
+
+        selected = ExportTraceServiceRequest()
+        with self.path.open("rb") as handle:
+            for line_offset in sorted(locations):
+                line_length = locations[line_offset][0][0]
+                handle.seek(line_offset)
+                request = decode_otlp_json(handle.read(line_length))
+                for _, resource_index, scope_index, span_index in sorted(
+                    locations[line_offset]
+                ):
+                    source_resource = request.resource_spans[resource_index]
+                    source_scope = source_resource.scope_spans[scope_index]
+                    target_resource = selected.resource_spans.add()
+                    target_resource.resource.CopyFrom(source_resource.resource)
+                    target_resource.schema_url = source_resource.schema_url
+                    target_scope = target_resource.scope_spans.add()
+                    target_scope.scope.CopyFrom(source_scope.scope)
+                    target_scope.schema_url = source_scope.schema_url
+                    target_scope.spans.add().CopyFrom(source_scope.spans[span_index])
+        return [selected]

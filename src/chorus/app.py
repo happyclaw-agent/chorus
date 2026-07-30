@@ -111,6 +111,24 @@ def _find_span(trace: dict[str, Any], span_id: str | None) -> dict[str, Any] | N
     return candidates[-1] if candidates else None
 
 
+def _root_for_span(trace: dict[str, Any], span_id: str | None) -> str | None:
+    if span_id is None:
+        return None
+    spans = {str(span.get("span_id") or ""): span for span in trace.get("spans") or []}
+    current = span_id
+    visited: set[str] = set()
+    while current and current not in visited:
+        visited.add(current)
+        span = spans.get(current)
+        if span is None:
+            return None
+        parent = str(span.get("parent_span_id") or "")
+        if not parent or parent not in spans:
+            return current
+        current = parent
+    return None
+
+
 def _policy_from_environment() -> PromotionPolicy | None:
     path = os.getenv("CHORUS_PROMOTION_POLICY", "").strip()
     if not path:
@@ -157,13 +175,16 @@ def create_app(
         else _catalog_from_environment()
     )
     existing_catalog = {
-        str(row.get("name") or "") for row in sidecars.read("eval_catalog")
+        str(row.get("name") or ""): row
+        for row in sidecars.read("eval_catalog")
+        if row.get("name")
     }
     for definition in catalog:
+        definition = dict(definition)
         name = str(definition.get("name") or "")
-        if name and name not in existing_catalog:
-            sidecars.append("eval_catalog", dict(definition))
-            existing_catalog.add(name)
+        if name and existing_catalog.get(name) != definition:
+            sidecars.append("eval_catalog", definition)
+            existing_catalog[name] = definition
 
     app = FastAPI(title="Chorus", version="0.1.0")
     app.state.trace_store = traces
@@ -253,7 +274,7 @@ def create_app(
     @app.get("/api/traces")
     def trace_list(limit: int = Query(default=100, ge=1, le=1000)) -> dict[str, Any]:
         rows = []
-        for trace in traces.trace_views()[:limit]:
+        for trace in traces.trace_views(limit=limit):
             trace_id = str(trace["trace_id"])
             rows.append(
                 {
@@ -296,10 +317,24 @@ def create_app(
         trace = traces.get_trace(trace_id)
         if trace is None:
             raise HTTPException(status_code=404, detail="trace not found")
-        span = _find_span(trace, request.span_id or request.root_span_id)
-        if (request.span_id or request.root_span_id) and span is None:
+        requested_span_id = request.span_id.lower() if request.span_id else None
+        requested_root_id = (
+            request.root_span_id.lower() if request.root_span_id else None
+        )
+        if requested_root_id and requested_root_id not in trace.get(
+            "root_span_ids", []
+        ):
+            raise HTTPException(status_code=422, detail="root span is not a trace root")
+        span = _find_span(trace, requested_span_id or requested_root_id)
+        if (requested_span_id or requested_root_id) and span is None:
             raise HTTPException(status_code=404, detail="span not found in trace")
         selected_span_id = str((span or {}).get("span_id") or "") or None
+        derived_root_id = _root_for_span(trace, selected_span_id)
+        if requested_root_id and derived_root_id != requested_root_id:
+            raise HTTPException(
+                status_code=422,
+                detail="selected span does not belong to the supplied root",
+            )
         content = sidecars.find_content(trace_id.lower(), selected_span_id)
         candidate = {"trace": trace, "span": span, "content": content}
         decision = policy.evaluate(candidate)
@@ -331,13 +366,10 @@ def create_app(
                     + "; supply explicit values or configure an extraction profile"
                 ),
             )
-        root_span_id = request.root_span_id
-        if root_span_id is None and selected_span_id in trace.get("root_span_ids", []):
-            root_span_id = selected_span_id
         reference = TraceRef(
             trace_id=trace_id.lower(),
             span_id=selected_span_id,
-            root_span_id=root_span_id,
+            root_span_id=requested_root_id or derived_root_id,
         )
         identity = ":".join(
             (
@@ -405,6 +437,3 @@ def create_app(
         return record
 
     return app
-
-
-app = create_app()

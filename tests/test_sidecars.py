@@ -1,3 +1,5 @@
+import pytest
+
 from abbrivio.sidecars import ContentRecord, SidecarStore, TraceRef, utc_now
 
 
@@ -29,6 +31,15 @@ def test_trace_refs_normalize_otlp_ids_to_lowercase():
 
     assert reference.trace_id == "ab" * 16
     assert reference.span_id == "cd" * 8
+
+
+@pytest.mark.parametrize("sign", ["+", "-"])
+def test_trace_refs_reject_signed_identifiers(sign):
+    with pytest.raises(ValueError, match="hexadecimal"):
+        TraceRef(trace_id=sign + "0" * 30 + "1")
+
+    with pytest.raises(ValueError, match="hexadecimal"):
+        TraceRef(trace_id="1" * 32, span_id=sign + "0" * 14 + "1")
 
 
 def test_sidecar_store_does_not_filter_application_lifecycle_values(tmp_path):

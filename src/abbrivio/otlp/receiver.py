@@ -72,13 +72,19 @@ def create_otlp_router(
                     status_code=400,
                     detail="invalid content length",
                 ) from error
+            if declared_length < 0:
+                raise HTTPException(status_code=400, detail="invalid content length")
             if declared_length > max_body_bytes:
                 raise HTTPException(status_code=413, detail="OTLP body is too large")
 
-        body = await request.body()
+        body = bytearray()
+        async for chunk in request.stream():
+            if len(body) + len(chunk) > max_body_bytes:
+                raise HTTPException(status_code=413, detail="OTLP body is too large")
+            body.extend(chunk)
         try:
             export_request, media_type = _decode_body(
-                body,
+                bytes(body),
                 content_type=request.headers.get("content-type", ""),
                 content_encoding=request.headers.get("content-encoding", ""),
                 max_body_bytes=max_body_bytes,

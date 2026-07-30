@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import os
 import re
+import subprocess
+import sys
 from dataclasses import dataclass
 
 from fastapi.testclient import TestClient
@@ -152,6 +155,59 @@ def test_feedback_summary_is_raw_and_catalog_is_application_supplied(tmp_path):
     ]
 
 
+def test_changed_catalog_definition_is_versioned_and_latest_is_served(tmp_path):
+    original = {"name": "example-quality", "threshold": 0.7}
+    updated = {"name": "example-quality", "threshold": 0.9}
+
+    create_app(tmp_path, evaluation_catalog=[original])
+    create_app(tmp_path, evaluation_catalog=[original])
+    app = create_app(tmp_path, evaluation_catalog=[updated])
+
+    stored = app.state.sidecar_store.read("eval_catalog")
+    assert stored == [original, updated]
+    assert TestClient(app).get("/api/evals").json()["catalog"] == [updated]
+
+
+def test_promotion_rejects_root_from_another_run_in_same_trace(tmp_path):
+    app, reference = _app_with_trace(tmp_path)
+    other_root = "33" * 8
+    AbbrivioCompletionObserver(
+        OtlpJsonlSpanExporter(app.state.trace_store),
+        app_attributes={
+            "gen_ai.input.messages": '[{"role":"user","content":"Other"}]',
+            "gen_ai.output.messages": '[{"role":"assistant","content":"Run"}]',
+        },
+    )(Observation(trace_id=reference.trace_id, span_id=other_root))
+
+    response = TestClient(app).post(
+        f"/api/traces/{reference.trace_id}/promote",
+        json={"span_id": reference.span_id, "root_span_id": other_root},
+    )
+
+    assert response.status_code == 422
+    assert "does not belong" in response.json()["detail"]
+
+
+def test_importing_cli_does_not_create_default_app_data(tmp_path):
+    catalog = tmp_path / "catalog.json"
+    catalog.write_text('[{"name":"should-not-be-written"}]', encoding="utf-8")
+
+    result = subprocess.run(
+        [sys.executable, "-c", "import chorus.cli"],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "CHORUS_EVAL_CATALOG": str(catalog),
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not (tmp_path / ".chorus").exists()
+
+
 def test_otlp_export_endpoint_returns_canonical_trace_data(tmp_path):
     app, reference = _app_with_trace(tmp_path)
 
@@ -162,6 +218,24 @@ def test_otlp_export_endpoint_returns_canonical_trace_data(tmp_path):
     assert response.headers["content-type"].startswith("application/json")
     assert span["traceId"] == reference.trace_id
     assert span["spanId"] == reference.span_id
+
+
+def test_trace_list_uses_bounded_store_query(tmp_path, monkeypatch):
+    app, _ = _app_with_trace(tmp_path)
+    original_trace_views = app.state.trace_store.trace_views
+    observed_limits: list[int | None] = []
+
+    def traced_views(limit: int | None = None):
+        observed_limits.append(limit)
+        return original_trace_views(limit=limit)
+
+    monkeypatch.setattr(app.state.trace_store, "trace_views", traced_views)
+
+    response = TestClient(app).get("/api/traces?limit=1")
+
+    assert response.status_code == 200
+    assert len(response.json()["traces"]) == 1
+    assert observed_limits == [1]
 
 
 def test_ui_and_generic_server_contain_no_application_specific_copy(tmp_path):

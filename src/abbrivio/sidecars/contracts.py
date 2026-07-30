@@ -34,10 +34,9 @@ class TraceRef:
 def _validate_hex_id(name: str, value: str, length: int) -> None:
     if len(value) != length:
         raise ValueError(f"{name} must contain {length} hexadecimal characters")
-    try:
-        parsed = int(value, 16)
-    except ValueError as error:
-        raise ValueError(f"{name} must be hexadecimal") from error
+    if not all(character in "0123456789abcdefABCDEF" for character in value):
+        raise ValueError(f"{name} must be hexadecimal")
+    parsed = int(value, 16)
     if parsed == 0:
         raise ValueError(f"{name} must be nonzero")
 
