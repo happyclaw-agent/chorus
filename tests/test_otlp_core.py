@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import gzip
 import json
+import multiprocessing
+import threading
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 
+import httpx
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -16,6 +21,7 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.trace import SpanKind
 
+import abbrivio.otlp.receiver as otlp_receiver_module
 import abbrivio.otlp.store as otlp_store_module
 from abbrivio.otlp import (
     OtlpJsonlSpanExporter,
@@ -158,6 +164,23 @@ def _single_span_request(
     span.start_time_unix_nano = start_ns
     span.end_time_unix_nano = start_ns + 10
     return request
+
+
+def _append_store_batch(path: str, namespace: int, count: int) -> list[str]:
+    store = OtlpJsonlStore(path)
+    trace_ids: list[str] = []
+    for offset in range(count):
+        value = namespace * 1_000 + offset + 1
+        trace_id = f"{value:032x}"
+        trace_ids.append(trace_id)
+        store.append(
+            _single_span_request(
+                trace_id,
+                f"{value:016x}",
+                value * 1_000,
+            )
+        )
+    return trace_ids
 
 
 def test_otlp_json_and_protobuf_round_trip_preserve_complete_messages():
@@ -352,6 +375,59 @@ def test_stale_index_rebuilds_after_canonical_append(tmp_path):
     assert restarted.get_trace(first_trace_id)["trace_id"] == first_trace_id
 
 
+def test_store_serializes_multiple_instances_in_one_process(tmp_path):
+    path = tmp_path / "threaded.otlp.jsonl"
+    worker_count = 6
+    batch_size = 12
+    barrier = threading.Barrier(worker_count)
+
+    def append_batch(namespace: int) -> list[str]:
+        barrier.wait(timeout=10)
+        return _append_store_batch(str(path), namespace, batch_size)
+
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        futures = [executor.submit(append_batch, number) for number in range(1, 7)]
+        expected = {
+            trace_id for future in futures for trace_id in future.result(timeout=30)
+        }
+
+    restarted = OtlpJsonlStore(path)
+    assert len(restarted.read_requests()) == worker_count * batch_size
+    assert {view["trace_id"] for view in restarted.trace_views()} == expected
+    assert all(restarted.get_trace(trace_id) is not None for trace_id in expected)
+
+
+def test_store_serializes_canonical_append_and_index_across_processes(tmp_path):
+    path = tmp_path / "multiprocess.otlp.jsonl"
+    worker_count = 3
+    batch_size = 8
+    context = multiprocessing.get_context("spawn")
+
+    with ProcessPoolExecutor(
+        max_workers=worker_count,
+        mp_context=context,
+    ) as executor:
+        futures = [
+            executor.submit(_append_store_batch, str(path), number, batch_size)
+            for number in range(10, 10 + worker_count)
+        ]
+        expected = {
+            trace_id for future in futures for trace_id in future.result(timeout=60)
+        }
+
+    restarted = OtlpJsonlStore(path)
+    requests = restarted.read_requests()
+    assert len(requests) == worker_count * batch_size
+    assert {
+        span.trace_id.hex()
+        for request in requests
+        for resource in request.resource_spans
+        for scope in resource.scope_spans
+        for span in scope.spans
+    } == expected
+    assert {view["trace_id"] for view in restarted.trace_views()} == expected
+
+
 def test_projection_has_no_interaction_id_requirement():
     traces = project_requests([_complete_request()])
 
@@ -443,6 +519,46 @@ def test_otlp_http_router_accepts_protobuf_json_and_gzip(tmp_path):
         ).status_code
         == 415
     )
+
+
+def test_otlp_http_router_offloads_gzip_and_decode_from_event_loop(
+    tmp_path, monkeypatch
+):
+    store = OtlpJsonlStore(tmp_path / "offloaded.otlp.jsonl")
+    app = FastAPI()
+    app.include_router(create_otlp_router(store))
+    decoder_threads: list[int] = []
+    original_decode = otlp_receiver_module._decode_body
+
+    def recording_decode(*args, **kwargs):
+        decoder_threads.append(threading.get_ident())
+        return original_decode(*args, **kwargs)
+
+    monkeypatch.setattr(otlp_receiver_module, "_decode_body", recording_decode)
+
+    async def send_request() -> tuple[int, httpx.Response]:
+        event_loop_thread = threading.get_ident()
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+        ) as client:
+            response = await client.post(
+                "/v1/traces",
+                content=gzip.compress(encode_otlp_protobuf(_complete_request())),
+                headers={
+                    "content-type": "application/x-protobuf",
+                    "content-encoding": "gzip",
+                },
+            )
+        return event_loop_thread, response
+
+    event_loop_thread, response = asyncio.run(send_request())
+
+    assert response.status_code == 200
+    assert decoder_threads
+    assert all(thread_id != event_loop_thread for thread_id in decoder_threads)
+    assert len(store.read_requests()) == 1
 
 
 def test_otlp_http_router_bounds_decompressed_payload(tmp_path):

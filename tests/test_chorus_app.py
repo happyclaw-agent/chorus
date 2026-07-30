@@ -10,7 +10,13 @@ from fastapi.testclient import TestClient
 
 from abbrivio import AbbrivioCompletionObserver
 from abbrivio.otlp import OtlpJsonlSpanExporter, OtlpJsonlStore
-from abbrivio.sidecars import SidecarStore
+from abbrivio.sidecars import (
+    ContentRecord,
+    FeedbackEvent,
+    SidecarStore,
+    TraceRef,
+    utc_now,
+)
 from chorus.app import create_app
 from chorus.promotion import AttributePromotionPolicy
 
@@ -38,6 +44,7 @@ class Observation:
     error_type: str | None = None
     trace_id: str = "11" * 16
     span_id: str = "22" * 8
+    parent_span_id: str | None = None
 
 
 def _app_with_trace(tmp_path, *, policy=None, catalog=None):
@@ -155,6 +162,178 @@ def test_feedback_summary_is_raw_and_catalog_is_application_supplied(tmp_path):
     ]
 
 
+def test_trace_list_batches_and_scopes_sidecars_to_each_root(tmp_path, monkeypatch):
+    app, first_root = _app_with_trace(tmp_path)
+    trace_id = first_root.trace_id
+    child_id = "33" * 8
+    second_root_id = "44" * 8
+    exporter = OtlpJsonlSpanExporter(app.state.trace_store)
+    AbbrivioCompletionObserver(
+        exporter,
+        app_attributes={
+            "gen_ai.input.messages": "child input",
+            "gen_ai.output.messages": "child output",
+        },
+    )(
+        Observation(
+            trace_id=trace_id,
+            span_id=child_id,
+            parent_span_id=first_root.span_id,
+            started_at="2026-07-30T12:00:01Z",
+        )
+    )
+    AbbrivioCompletionObserver(exporter)(
+        Observation(
+            trace_id=trace_id,
+            span_id=second_root_id,
+            started_at="2026-07-30T12:00:02Z",
+        )
+    )
+
+    sidecars = app.state.sidecar_store
+    references = {
+        "trace": TraceRef(trace_id=trace_id),
+        "first-root": TraceRef(trace_id=trace_id, root_span_id=first_root.span_id),
+        "first-child": TraceRef(
+            trace_id=trace_id,
+            span_id=child_id,
+            root_span_id=first_root.span_id,
+        ),
+        "second-root": TraceRef(
+            trace_id=trace_id,
+            span_id=second_root_id,
+            root_span_id=second_root_id,
+        ),
+    }
+    for name, reference in references.items():
+        sidecars.append(
+            "content",
+            ContentRecord(
+                schema_version=1,
+                content_id=name,
+                recorded_at=utc_now(),
+                trace=reference,
+                output_text=name,
+            ).to_dict(),
+        )
+        sidecars.append(
+            "feedback",
+            FeedbackEvent(
+                schema_version=1,
+                feedback_id=name,
+                occurred_at=utc_now(),
+                kind="test",
+                value=True,
+                source="test",
+                trace=reference,
+            ).to_dict(),
+        )
+
+    original_read = sidecars.read
+    read_calls: list[str] = []
+
+    def counted_read(collection, *, limit=None):
+        read_calls.append(collection)
+        return original_read(collection, limit=limit)
+
+    monkeypatch.setattr(sidecars, "read", counted_read)
+    response = TestClient(app).get("/api/traces")
+
+    assert response.status_code == 200
+    by_root = {row["root_span_id"]: row for row in response.json()["traces"]}
+    assert {item["content_id"] for item in by_root[first_root.span_id]["content"]} == {
+        "trace",
+        "first-root",
+        "first-child",
+    }
+    assert by_root[first_root.span_id]["feedback_count"] == 3
+    assert {item["content_id"] for item in by_root[second_root_id]["content"]} == {
+        "trace",
+        "second-root",
+    }
+    assert by_root[second_root_id]["feedback_count"] == 2
+    assert read_calls.count("content") == 1
+    assert read_calls.count("feedback") == 1
+
+
+def test_feedback_validates_linked_provenance_before_persist(tmp_path):
+    app, first_root = _app_with_trace(tmp_path)
+    trace_id = first_root.trace_id
+    child_id = "33" * 8
+    second_root_id = "44" * 8
+    exporter = OtlpJsonlSpanExporter(app.state.trace_store)
+    AbbrivioCompletionObserver(exporter)(
+        Observation(
+            trace_id=trace_id,
+            span_id=child_id,
+            parent_span_id=first_root.span_id,
+        )
+    )
+    AbbrivioCompletionObserver(exporter)(
+        Observation(trace_id=trace_id, span_id=second_root_id)
+    )
+    client = TestClient(app)
+
+    invalid_payloads = [
+        {
+            "trace_id": trace_id,
+            "span_id": "55" * 8,
+            "kind": "missing-span",
+        },
+        {
+            "trace_id": trace_id,
+            "span_id": child_id,
+            "root_span_id": second_root_id,
+            "kind": "wrong-subtree",
+        },
+        {
+            "trace_id": trace_id,
+            "root_span_id": "66" * 8,
+            "kind": "missing-root",
+        },
+        {
+            "trace_id": "77" * 16,
+            "span_id": "77" * 8,
+            "kind": "unavailable-linked-trace",
+        },
+    ]
+    for payload in invalid_payloads:
+        assert client.post("/api/feedback", json=payload).status_code == 422
+    assert app.state.sidecar_store.read("feedback") == []
+
+    valid = client.post(
+        "/api/feedback",
+        json={"trace_id": trace_id, "span_id": child_id, "kind": "valid-child"},
+    )
+
+    assert valid.status_code == 200
+    assert valid.json()["trace"] == {
+        "trace_id": trace_id,
+        "span_id": child_id,
+        "root_span_id": first_root.span_id,
+    }
+
+
+def test_feedback_allows_trace_level_orphan_without_inventing_span_provenance(
+    tmp_path,
+):
+    app = create_app(tmp_path)
+    client = TestClient(app)
+    orphan_trace_id = "88" * 16
+
+    response = client.post(
+        "/api/feedback",
+        json={"trace_id": orphan_trace_id, "kind": "external-trace-note"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["trace"] == {
+        "trace_id": orphan_trace_id,
+        "span_id": None,
+        "root_span_id": None,
+    }
+
+
 def test_changed_catalog_definition_is_versioned_and_latest_is_served(tmp_path):
     original = {"name": "example-quality", "threshold": 0.7}
     updated = {"name": "example-quality", "threshold": 0.9}
@@ -186,6 +365,55 @@ def test_promotion_rejects_root_from_another_run_in_same_trace(tmp_path):
 
     assert response.status_code == 422
     assert "does not belong" in response.json()["detail"]
+
+
+def test_root_only_promotion_selects_genai_descendant_within_that_root(tmp_path):
+    app, first_root = _app_with_trace(tmp_path)
+    child_id = "55" * 8
+    other_root_id = "66" * 8
+    exporter = OtlpJsonlSpanExporter(app.state.trace_store)
+    AbbrivioCompletionObserver(
+        exporter,
+        app_attributes={
+            "gen_ai.input.messages": '[{"role":"user","content":"Child input"}]',
+            "gen_ai.output.messages": (
+                '[{"role":"assistant","content":"Child output"}]'
+            ),
+        },
+    )(
+        Observation(
+            trace_id=first_root.trace_id,
+            span_id=child_id,
+            parent_span_id=first_root.span_id,
+            started_at="2026-07-30T12:00:01Z",
+        )
+    )
+    AbbrivioCompletionObserver(
+        exporter,
+        app_attributes={
+            "gen_ai.input.messages": "wrong input",
+            "gen_ai.output.messages": "wrong output",
+        },
+    )(
+        Observation(
+            trace_id=first_root.trace_id,
+            span_id=other_root_id,
+            started_at="2026-07-30T12:00:02Z",
+        )
+    )
+
+    response = TestClient(app).post(
+        f"/api/traces/{first_root.trace_id}/promote",
+        json={"root_span_id": first_root.span_id},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["actual_output"] == "Child output"
+    assert response.json()["trace"] == {
+        "trace_id": first_root.trace_id,
+        "span_id": child_id,
+        "root_span_id": first_root.span_id,
+    }
 
 
 def test_importing_cli_does_not_create_default_app_data(tmp_path):

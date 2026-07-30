@@ -107,10 +107,33 @@ def _unique_spans(trace_views: Sequence[dict[str, Any]]) -> list[dict[str, Any]]
     return list(spans.values())
 
 
-def _find_span(trace: dict[str, Any], span_id: str | None) -> dict[str, Any] | None:
+def _find_span(
+    trace: dict[str, Any],
+    span_id: str | None,
+    *,
+    root_span_id: str | None = None,
+) -> dict[str, Any] | None:
     spans = trace.get("spans") or []
     if span_id:
         return next((span for span in spans if span.get("span_id") == span_id), None)
+    if root_span_id:
+        subtree = [
+            span
+            for span in spans
+            if _root_for_span(trace, str(span.get("span_id") or "")) == root_span_id
+        ]
+        genai_descendants = [
+            span
+            for span in subtree
+            if span.get("span_id") != root_span_id
+            and (span.get("attributes") or {}).get("gen_ai.operation.name")
+        ]
+        if genai_descendants:
+            return genai_descendants[-1]
+        root = next(
+            (span for span in subtree if span.get("span_id") == root_span_id), None
+        )
+        return root or (subtree[-1] if subtree else None)
     genai = [
         span
         for span in spans
@@ -136,6 +159,61 @@ def _root_for_span(trace: dict[str, Any], span_id: str | None) -> str | None:
             return current
         current = parent
     return None
+
+
+def _sidecars_by_trace(
+    records: Sequence[dict[str, Any]],
+) -> dict[str, list[dict[str, Any]]]:
+    indexed: dict[str, list[dict[str, Any]]] = {}
+    for record in records:
+        reference = record.get("trace") or {}
+        trace_id = str(reference.get("trace_id") or "").lower()
+        if trace_id:
+            indexed.setdefault(trace_id, []).append(record)
+    return indexed
+
+
+def _sidecar_matches_root(
+    record: dict[str, Any],
+    *,
+    root_span_id: str | None,
+    span_ids: set[str],
+) -> bool:
+    reference = record.get("trace") or {}
+    referenced_root = str(reference.get("root_span_id") or "").lower() or None
+    referenced_span = str(reference.get("span_id") or "").lower() or None
+    if referenced_root is not None and referenced_root != root_span_id:
+        return False
+    if referenced_span is not None and referenced_span not in span_ids:
+        return False
+    return True
+
+
+def _content_for_root(
+    records: Sequence[dict[str, Any]],
+    *,
+    root_span_id: str | None,
+    span_ids: set[str],
+) -> list[dict[str, Any]]:
+    latest: dict[tuple[str, str], dict[str, Any]] = {}
+    for record in records:
+        if not _sidecar_matches_root(
+            record,
+            root_span_id=root_span_id,
+            span_ids=span_ids,
+        ):
+            continue
+        reference = record.get("trace") or {}
+        referenced_span = str(reference.get("span_id") or "").lower()
+        referenced_root = str(reference.get("root_span_id") or "").lower()
+        if referenced_span:
+            key = ("span", referenced_span)
+        elif referenced_root:
+            key = ("root", referenced_root)
+        else:
+            key = ("trace", "")
+        latest[key] = record
+    return list(latest.values())
 
 
 def _policy_from_environment() -> PromotionPolicy | None:
@@ -310,14 +388,35 @@ def create_app(
 
     @app.get("/api/traces")
     def trace_list(limit: int = Query(default=100, ge=1, le=1000)) -> dict[str, Any]:
+        content_by_trace = _sidecars_by_trace(sidecars.read("content"))
+        feedback_by_trace = _sidecars_by_trace(sidecars.read("feedback"))
         rows = []
         for trace in traces.trace_views(limit=limit):
-            trace_id = str(trace["trace_id"])
+            trace_id = str(trace["trace_id"]).lower()
+            root_span_id = str(trace.get("root_span_id") or "").lower() or None
+            span_ids = {
+                str(span.get("span_id") or "").lower()
+                for span in trace.get("spans") or []
+                if span.get("span_id")
+            }
+            trace_content = content_by_trace.get(trace_id, [])
+            trace_feedback = feedback_by_trace.get(trace_id, [])
             rows.append(
                 {
                     **trace,
-                    "content": sidecars.content_for_trace(trace_id),
-                    "feedback_count": len(sidecars.feedback_for_trace(trace_id)),
+                    "content": _content_for_root(
+                        trace_content,
+                        root_span_id=root_span_id,
+                        span_ids=span_ids,
+                    ),
+                    "feedback_count": sum(
+                        _sidecar_matches_root(
+                            record,
+                            root_span_id=root_span_id,
+                            span_ids=span_ids,
+                        )
+                        for record in trace_feedback
+                    ),
                 }
             )
         return {"traces": rows}
@@ -362,7 +461,11 @@ def create_app(
             "root_span_ids", []
         ):
             raise HTTPException(status_code=422, detail="root span is not a trace root")
-        span = _find_span(trace, requested_span_id or requested_root_id)
+        span = _find_span(
+            trace,
+            requested_span_id,
+            root_span_id=requested_root_id,
+        )
         if (requested_span_id or requested_root_id) and span is None:
             raise HTTPException(status_code=404, detail="span not found in trace")
         selected_span_id = str((span or {}).get("span_id") or "") or None
@@ -450,6 +553,42 @@ def create_app(
                 )
             except ValueError as error:
                 raise HTTPException(status_code=422, detail=str(error)) from error
+            if reference.span_id or reference.root_span_id:
+                trace = traces.get_trace(reference.trace_id)
+                if trace is None:
+                    raise HTTPException(
+                        status_code=422,
+                        detail="linked feedback requires a locally available trace",
+                    )
+                if reference.root_span_id and reference.root_span_id not in trace.get(
+                    "root_span_ids", []
+                ):
+                    raise HTTPException(
+                        status_code=422,
+                        detail="root span is not a trace root",
+                    )
+                selected_span = _find_span(trace, reference.span_id)
+                if reference.span_id and selected_span is None:
+                    raise HTTPException(
+                        status_code=422,
+                        detail="span not found in trace",
+                    )
+                derived_root_id = _root_for_span(trace, reference.span_id)
+                if (
+                    reference.span_id
+                    and reference.root_span_id
+                    and derived_root_id != reference.root_span_id
+                ):
+                    raise HTTPException(
+                        status_code=422,
+                        detail="selected span does not belong to the supplied root",
+                    )
+                if reference.span_id and reference.root_span_id is None:
+                    reference = TraceRef(
+                        trace_id=reference.trace_id,
+                        span_id=reference.span_id,
+                        root_span_id=derived_root_id,
+                    )
         elif request.span_id or request.root_span_id:
             raise HTTPException(
                 status_code=422,

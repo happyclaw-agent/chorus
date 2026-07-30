@@ -62,3 +62,17 @@ def test_sidecar_store_does_not_filter_application_lifecycle_values(tmp_path):
         "scheduled",
         "anything_else",
     ]
+
+
+def test_sidecar_read_with_zero_limit_is_empty(tmp_path):
+    store = SidecarStore(tmp_path)
+    store.append("feedback", {"feedback_id": "feedback-1"})
+
+    assert store.read("feedback", limit=0) == []
+
+
+def test_sidecar_read_rejects_negative_limit(tmp_path):
+    store = SidecarStore(tmp_path)
+
+    with pytest.raises(ValueError, match="non-negative"):
+        store.read("feedback", limit=-1)

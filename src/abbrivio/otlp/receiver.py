@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
     ExportTraceServiceResponse,
 )
+from starlette.concurrency import run_in_threadpool
 
 from abbrivio.otlp.codec import decode_otlp_json, decode_otlp_protobuf
 
@@ -83,7 +84,8 @@ def create_otlp_router(
                 raise HTTPException(status_code=413, detail="OTLP body is too large")
             body.extend(chunk)
         try:
-            export_request, media_type = _decode_body(
+            export_request, media_type = await run_in_threadpool(
+                _decode_body,
                 bytes(body),
                 content_type=request.headers.get("content-type", ""),
                 content_encoding=request.headers.get("content-encoding", ""),
@@ -100,7 +102,7 @@ def create_otlp_router(
             ) from error
 
         try:
-            store.append(export_request)
+            await run_in_threadpool(store.append, export_request)
         except Exception as error:
             raise HTTPException(
                 status_code=500,

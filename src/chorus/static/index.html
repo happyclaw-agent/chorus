@@ -98,7 +98,7 @@
 
       async function promote(traceId, rootSpanId) {
         const status = document.querySelector("#status");
-        let body = { span_id: rootSpanId || null };
+        let body = { root_span_id: rootSpanId || null };
         let response = await fetch(`/api/traces/${traceId}/promote`, {method: "POST", headers: {"content-type":"application/json"}, body: JSON.stringify(body)});
         if (response.status === 422) {
           const inputText = window.prompt("Input was not retained. Enter the evaluation input:");

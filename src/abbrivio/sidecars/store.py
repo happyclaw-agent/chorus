@@ -42,6 +42,10 @@ class SidecarStore:
     def read(
         self, collection: str, *, limit: int | None = None
     ) -> list[dict[str, Any]]:
+        if limit is not None and limit < 0:
+            raise ValueError("limit must be non-negative")
+        if limit == 0:
+            return []
         path = self.path_for(collection)
         if not path.exists():
             return []
@@ -55,7 +59,7 @@ class SidecarStore:
                 if isinstance(value, dict):
                     records.append(value)
         if limit is not None:
-            return records[-max(0, limit) :]
+            return records[-limit:]
         return records
 
     def latest(self, collection: str, key: str) -> list[dict[str, Any]]:

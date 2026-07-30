@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import fcntl
+import os
 import sqlite3
 import threading
 from collections import defaultdict
 from collections.abc import Iterator, Sequence
-from contextlib import closing
+from contextlib import closing, contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +20,13 @@ from abbrivio.otlp.codec import TraceData, decode_otlp_json, encode_otlp_json
 from abbrivio.otlp.projection import project_requests
 
 _INDEX_SCHEMA_VERSION = "1"
+_PATH_LOCKS: dict[Path, threading.RLock] = {}
+_PATH_LOCKS_GUARD = threading.Lock()
+
+
+def _lock_for_path(path: Path) -> threading.RLock:
+    with _PATH_LOCKS_GUARD:
+        return _PATH_LOCKS.setdefault(path, threading.RLock())
 
 
 def _sortable_nanos(value: int) -> str:
@@ -30,13 +39,26 @@ class OtlpJsonlStore:
     def __init__(self, path: str | Path):
         self.path = Path(path).expanduser().resolve()
         self.index_path = Path(f"{self.path}.index.sqlite3")
-        self._lock = threading.RLock()
+        self.lock_path = Path(f"{self.path}.lock")
+        self._lock = _lock_for_path(self.path)
+
+    @contextmanager
+    def _locked(self) -> Iterator[None]:
+        """Serialize canonical and index access across threads and processes."""
+        with self._lock:
+            self.lock_path.parent.mkdir(parents=True, exist_ok=True)
+            with self.lock_path.open("a+b") as lock_handle:
+                fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+                try:
+                    yield
+                finally:
+                    fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
 
     def append(self, request: TraceData) -> None:
         payload = encode_otlp_json(request)
         indexed_request = decode_otlp_json(payload)
         encoded = (payload + "\n").encode("utf-8")
-        with self._lock:
+        with self._locked():
             self.path.parent.mkdir(parents=True, exist_ok=True)
             with closing(self._open_index()) as connection:
                 self._ensure_index(connection)
@@ -44,6 +66,7 @@ class OtlpJsonlStore:
                     offset = handle.tell()
                     handle.write(encoded)
                     handle.flush()
+                    os.fsync(handle.fileno())
                 with connection:
                     affected = self._index_request(
                         connection,
@@ -57,7 +80,7 @@ class OtlpJsonlStore:
     def iter_requests(self) -> Iterator[ExportTraceServiceRequest]:
         if not self.path.exists():
             return
-        with self._lock, self.path.open(encoding="utf-8") as handle:
+        with self._locked(), self.path.open(encoding="utf-8") as handle:
             lines = list(handle)
         for line_number, line in enumerate(lines, start=1):
             if not line.strip():
@@ -80,7 +103,7 @@ class OtlpJsonlStore:
 
     def get_trace(self, trace_id: str) -> dict[str, Any] | None:
         normalized = trace_id.strip().lower()
-        with self._lock, closing(self._open_index()) as connection:
+        with self._locked(), closing(self._open_index()) as connection:
             self._ensure_index(connection)
             requests = self._read_indexed_requests(connection, [normalized])
         for trace in project_requests(requests):
@@ -99,7 +122,7 @@ class OtlpJsonlStore:
         if limit == 0:
             return []
 
-        with self._lock, closing(self._open_index()) as connection:
+        with self._locked(), closing(self._open_index()) as connection:
             self._ensure_index(connection)
             query = (
                 "SELECT trace_id, root_span_id FROM trace_roots "
