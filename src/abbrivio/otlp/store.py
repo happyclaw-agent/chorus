@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import fcntl
 import os
 import sqlite3
 import threading
@@ -16,6 +15,7 @@ from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
     ExportTraceServiceRequest,
 )
 
+from abbrivio._file_lock import exclusive_file_lock
 from abbrivio.otlp.codec import TraceData, decode_otlp_json, encode_otlp_json
 from abbrivio.otlp.projection import project_requests
 
@@ -46,13 +46,8 @@ class OtlpJsonlStore:
     def _locked(self) -> Iterator[None]:
         """Serialize canonical and index access across threads and processes."""
         with self._lock:
-            self.lock_path.parent.mkdir(parents=True, exist_ok=True)
-            with self.lock_path.open("a+b") as lock_handle:
-                fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
-                try:
-                    yield
-                finally:
-                    fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+            with exclusive_file_lock(self.lock_path):
+                yield
 
     def append(self, request: TraceData) -> None:
         payload = encode_otlp_json(request)

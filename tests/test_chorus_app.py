@@ -667,6 +667,104 @@ def test_root_only_promotion_selects_genai_descendant_within_that_root(tmp_path)
     }
 
 
+def test_promotion_does_not_use_root_linked_content_from_another_run(tmp_path):
+    trace_id = "77" * 16
+    first_root_id = "11" * 8
+    second_root_id = "22" * 8
+    trace_store = OtlpJsonlStore(tmp_path / "traces.otlp.jsonl")
+    observer = AbbrivioCompletionObserver(OtlpJsonlSpanExporter(trace_store))
+    observer(Observation(trace_id=trace_id, span_id=first_root_id))
+    observer(Observation(trace_id=trace_id, span_id=second_root_id))
+    app = create_app(tmp_path, trace_store=trace_store)
+    sidecars = app.state.sidecar_store
+    for content_id, root_span_id in (
+        ("first-run", first_root_id),
+        ("second-run", second_root_id),
+    ):
+        sidecars.append(
+            "content",
+            ContentRecord(
+                schema_version=1,
+                content_id=content_id,
+                recorded_at=utc_now(),
+                trace=TraceRef(trace_id=trace_id, root_span_id=root_span_id),
+                input_text=f"{content_id} input",
+                output_text=f"{content_id} output",
+            ).to_dict(),
+        )
+
+    response = TestClient(app).post(
+        f"/api/traces/{trace_id}/promote",
+        json={"root_span_id": first_root_id},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["input_text"] == "first-run input"
+    assert response.json()["actual_output"] == "first-run output"
+
+
+def test_provisional_root_sidecars_follow_child_when_parent_arrives(tmp_path):
+    trace_id = "88" * 16
+    parent_id = "33" * 8
+    child_id = "44" * 8
+    trace_store = OtlpJsonlStore(tmp_path / "traces.otlp.jsonl")
+    observer = AbbrivioCompletionObserver(OtlpJsonlSpanExporter(trace_store))
+    observer(
+        Observation(
+            trace_id=trace_id,
+            span_id=child_id,
+            parent_span_id=parent_id,
+        )
+    )
+    app = create_app(tmp_path, trace_store=trace_store)
+    client = TestClient(app)
+    assert (
+        client.post(
+            "/api/sidecars/content",
+            json=ContentRecord(
+                schema_version=1,
+                content_id="orphan-content",
+                recorded_at=utc_now(),
+                trace=TraceRef(trace_id=trace_id, root_span_id=child_id),
+                input_text="orphan input",
+                output_text="orphan output",
+            ).to_dict(),
+        ).status_code
+        == 200
+    )
+    assert (
+        client.post(
+            "/api/feedback",
+            json={
+                "trace_id": trace_id,
+                "root_span_id": child_id,
+                "kind": "captured-before-parent",
+            },
+        ).status_code
+        == 200
+    )
+
+    observer(Observation(trace_id=trace_id, span_id=parent_id))
+
+    runs = client.get("/api/traces").json()["traces"]
+    assert [run["root_span_id"] for run in runs] == [parent_id]
+    assert [item["content_id"] for item in runs[0]["content"]] == ["orphan-content"]
+    assert runs[0]["feedback_count"] == 1
+
+    promoted = client.post(
+        f"/api/traces/{trace_id}/promote",
+        json={"root_span_id": parent_id},
+    )
+    assert promoted.status_code == 200
+    assert promoted.json()["input_text"] == "orphan input"
+    assert promoted.json()["actual_output"] == "orphan output"
+    assert promoted.json()["trace"] == {
+        "trace_id": trace_id,
+        "span_id": child_id,
+        "root_span_id": parent_id,
+    }
+
+
 def test_importing_cli_does_not_create_default_app_data(tmp_path):
     catalog = tmp_path / "catalog.json"
     catalog.write_text('[{"name":"should-not-be-written"}]', encoding="utf-8")

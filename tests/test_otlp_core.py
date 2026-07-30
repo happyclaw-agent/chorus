@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import gzip
 import json
+import math
 import multiprocessing
 import threading
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
@@ -33,6 +34,7 @@ from abbrivio.otlp import (
     encode_otlp_protobuf,
     project_requests,
 )
+from chorus.app import create_app
 
 TRACE_ID = "00112233445566778899aabbccddeeff"
 ROOT_ID = "0011223344556677"
@@ -40,6 +42,7 @@ CHILD_ID = "1021324354657687"
 SECOND_ROOT_ID = "ffeeddccbbaa9988"
 OTHER_TRACE_ID = "fedcba98765432100123456789abcdef"
 OTHER_ROOT_ID = "8899aabbccddeeff"
+UNKNOWN_VARINT_FIELD_99 = b"\x98\x06\x01"
 
 
 def _set_string_attribute(container, key: str, value: str) -> None:
@@ -166,6 +169,18 @@ def _single_span_request(
     return request
 
 
+def _request_with_unknown_field(*, nested: bool) -> ExportTraceServiceRequest:
+    request = _complete_request()
+    if nested:
+        span = request.resource_spans[0].scope_spans[0].spans[0]
+        span.ParseFromString(span.SerializeToString() + UNKNOWN_VARINT_FIELD_99)
+        return request
+
+    decoded = ExportTraceServiceRequest()
+    decoded.ParseFromString(request.SerializeToString() + UNKNOWN_VARINT_FIELD_99)
+    return decoded
+
+
 def _append_store_batch(path: str, namespace: int, count: int) -> list[str]:
     store = OtlpJsonlStore(path)
     trace_ids: list[str] = []
@@ -232,6 +247,80 @@ def test_codecs_reject_zero_or_wrong_width_trace_identifiers():
     document["resourceSpans"][0]["scopeSpans"][0]["spans"][0]["spanId"] = "01"
     with pytest.raises(ValueError, match="span"):
         decode_otlp_json(document)
+
+
+@pytest.mark.parametrize("nested", [False, True], ids=["root", "nested"])
+def test_protobuf_codec_rejects_unknown_fields_at_every_message_depth(nested):
+    request = _request_with_unknown_field(nested=nested)
+    payload = request.SerializeToString()
+
+    with pytest.raises(ValueError, match="unknown protobuf field"):
+        decode_otlp_protobuf(payload)
+    with pytest.raises(ValueError, match="unknown protobuf field"):
+        encode_otlp_protobuf(request)
+
+
+def test_nonfinite_doubles_keep_otlp_semantics_and_project_as_json_strings(tmp_path):
+    request = _complete_request()
+    root = request.resource_spans[0].scope_spans[0].spans[0]
+    special_values = {
+        "abbrivio.cost.amount": math.nan,
+        "test.positive_infinity": math.inf,
+        "test.negative_infinity": -math.inf,
+    }
+    for key, value in special_values.items():
+        attribute = root.attributes.add()
+        attribute.key = key
+        attribute.value.double_value = value
+
+    canonical_document = json.loads(encode_otlp_json(request))
+    canonical_span = canonical_document["resourceSpans"][0]["scopeSpans"][0]["spans"][0]
+    canonical_attributes = {
+        attribute["key"]: attribute["value"]["doubleValue"]
+        for attribute in canonical_span["attributes"]
+        if attribute["key"] in special_values
+    }
+    assert canonical_attributes == {
+        "abbrivio.cost.amount": "NaN",
+        "test.positive_infinity": "Infinity",
+        "test.negative_infinity": "-Infinity",
+    }
+
+    json_round_trip = decode_otlp_json(canonical_document)
+    protobuf_round_trip = decode_otlp_protobuf(encode_otlp_protobuf(request))
+    for decoded in (json_round_trip, protobuf_round_trip):
+        decoded_attributes = {
+            attribute.key: attribute.value.double_value
+            for attribute in decoded.resource_spans[0]
+            .scope_spans[0]
+            .spans[0]
+            .attributes
+            if attribute.key in special_values
+        }
+        assert math.isnan(decoded_attributes["abbrivio.cost.amount"])
+        assert decoded_attributes["test.positive_infinity"] == math.inf
+        assert decoded_attributes["test.negative_infinity"] == -math.inf
+
+    store = OtlpJsonlStore(tmp_path / "nonfinite.otlp.jsonl")
+    store.append(request)
+    trace = store.get_trace(TRACE_ID)
+    assert trace is not None
+    projected_attributes = trace["spans"][0]["attributes"]
+    assert projected_attributes["abbrivio.cost.amount"] == "NaN"
+    assert projected_attributes["test.positive_infinity"] == "Infinity"
+    assert projected_attributes["test.negative_infinity"] == "-Infinity"
+    json.dumps(trace, allow_nan=False)
+
+    client = TestClient(create_app(tmp_path, trace_store=store))
+    for path in (
+        "/api/traces",
+        f"/api/traces/{TRACE_ID}",
+        "/api/summary",
+        "/api/otlp/traces",
+    ):
+        response = client.get(path)
+        assert response.status_code == 200
+        json.dumps(response.json(), allow_nan=False)
 
 
 def test_store_writes_canonical_otlp_jsonl_and_projects_every_trace(tmp_path):
@@ -608,6 +697,25 @@ def test_otlp_http_router_rejects_invalid_ids_before_persisting(tmp_path):
     response = TestClient(app).post(
         "/v1/traces",
         content=request.SerializeToString(),
+        headers={"content-type": "application/x-protobuf"},
+    )
+
+    assert response.status_code == 400
+    assert not store.path.exists()
+
+
+@pytest.mark.parametrize("nested", [False, True], ids=["root", "nested"])
+def test_otlp_http_router_rejects_unknown_protobuf_fields_before_persisting(
+    tmp_path,
+    nested,
+):
+    store = OtlpJsonlStore(tmp_path / f"unknown-{nested}.otlp.jsonl")
+    app = FastAPI()
+    app.include_router(create_otlp_router(store))
+
+    response = TestClient(app).post(
+        "/v1/traces",
+        content=_request_with_unknown_field(nested=nested).SerializeToString(),
         headers={"content-type": "application/x-protobuf"},
     )
 

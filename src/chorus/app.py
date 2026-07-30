@@ -246,11 +246,50 @@ def _sidecar_matches_root(
         return False
     referenced_root = str(reference.get("root_span_id") or "").lower() or None
     referenced_span = str(reference.get("span_id") or "").lower() or None
-    if referenced_root is not None and referenced_root != root_span_id:
+    if (
+        referenced_root is not None
+        and referenced_root != root_span_id
+        and referenced_root not in span_ids
+    ):
         return False
     if referenced_span is not None and referenced_span not in span_ids:
         return False
     return True
+
+
+def _content_for_promotion(
+    records: Sequence[dict[str, Any]],
+    *,
+    trace_id: str,
+    selected_span_id: str | None,
+    root_span_id: str | None,
+    span_ids: set[str],
+) -> dict[str, Any] | None:
+    root_match: dict[str, Any] | None = None
+    trace_match: dict[str, Any] | None = None
+    for record in reversed(records):
+        reference = record.get("trace")
+        if not isinstance(reference, Mapping):
+            continue
+        if str(reference.get("trace_id") or "").lower() != trace_id:
+            continue
+        if not _sidecar_matches_root(
+            record,
+            root_span_id=root_span_id,
+            span_ids=span_ids,
+        ):
+            continue
+        referenced_span = str(reference.get("span_id") or "").lower() or None
+        referenced_root = str(reference.get("root_span_id") or "").lower() or None
+        if selected_span_id is not None and referenced_span == selected_span_id:
+            return record
+        if referenced_span is not None:
+            continue
+        if referenced_root is not None and root_match is None:
+            root_match = record
+        elif referenced_root is None and trace_match is None:
+            trace_match = record
+    return root_match or trace_match
 
 
 def _content_for_root(
@@ -591,7 +630,20 @@ def create_app(
                 status_code=422,
                 detail="selected span does not belong to the supplied root",
             )
-        content = sidecars.find_content(trace_id.lower(), selected_span_id)
+        selected_root_id = requested_root_id or derived_root_id
+        subtree_span_ids = {
+            str(candidate.get("span_id") or "").lower()
+            for candidate in trace.get("spans") or []
+            if _root_for_span(trace, str(candidate.get("span_id") or ""))
+            == selected_root_id
+        }
+        content = _content_for_promotion(
+            sidecars.read("content"),
+            trace_id=trace_id.lower(),
+            selected_span_id=selected_span_id,
+            root_span_id=selected_root_id,
+            span_ids=subtree_span_ids,
+        )
         candidate = {"trace": trace, "span": span, "content": content}
         decision = policy.evaluate(candidate)
         if not decision.allowed:

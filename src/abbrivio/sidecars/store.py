@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import fcntl
 import json
 import os
 import threading
@@ -11,6 +10,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
+from abbrivio._file_lock import exclusive_file_lock
 from abbrivio.sidecars.contracts import TraceRef
 
 _FILES = {
@@ -91,13 +91,8 @@ class SidecarStore:
         lock = _lock_for_path(path)
         lock_path = Path(f"{path}.lock")
         with lock:
-            lock_path.parent.mkdir(parents=True, exist_ok=True)
-            with lock_path.open("a+b") as lock_handle:
-                fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
-                try:
-                    yield
-                finally:
-                    fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+            with exclusive_file_lock(lock_path):
+                yield
 
     def append(self, collection: str, record: dict[str, Any]) -> None:
         path = self.path_for(collection)

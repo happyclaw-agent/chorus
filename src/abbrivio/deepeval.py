@@ -88,14 +88,20 @@ def export_deepeval_summary(
     evaluated_models = {
         str(value) for value in (summary.get("evaluated_output_models") or []) if value
     }
-    configured_model = str(
-        summary.get("llm_under_test") or summary.get("model") or "unknown"
-    )
-    run_model = (
-        configured_model
-        if not evaluated_models or evaluated_models == {configured_model}
-        else "mixed"
-    )
+    configured_model_value = summary.get("llm_under_test") or summary.get("model")
+    configured_model = str(configured_model_value) if configured_model_value else None
+    if configured_model is not None:
+        run_model = (
+            configured_model
+            if not evaluated_models or evaluated_models == {configured_model}
+            else "mixed"
+        )
+    elif len(evaluated_models) == 1:
+        run_model = next(iter(evaluated_models))
+    elif evaluated_models:
+        run_model = "mixed"
+    else:
+        run_model = "unknown"
     run = EvaluationRun(
         schema_version=1,
         run_id=str(summary.get("run_id") or uuid.uuid4()),

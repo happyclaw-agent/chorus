@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import math
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
@@ -25,6 +26,10 @@ def _any_value(value: Any) -> Any:
     if selected == "int_value":
         return value.int_value
     if selected == "double_value":
+        if math.isnan(value.double_value):
+            return "NaN"
+        if math.isinf(value.double_value):
+            return "Infinity" if value.double_value > 0 else "-Infinity"
         return value.double_value
     if selected == "bytes_value":
         return base64.b64encode(value.bytes_value).decode("ascii")

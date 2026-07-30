@@ -87,3 +87,21 @@ def test_generic_summary_field_names_and_case_loading(tmp_path):
     assert run["evaluator"] == "judge-a"
     assert run["total"] == 3
     assert load_evaluation_cases(store) == [{"case_id": "case-1", "name": "updated"}]
+
+
+def test_single_evaluated_model_is_used_when_configuration_is_absent(tmp_path):
+    run = export_deepeval_summary(
+        SidecarStore(tmp_path),
+        {"evaluated_output_models": ["observed-model", "observed-model"]},
+    )
+
+    assert run["model"] == "observed-model"
+
+
+def test_multiple_evaluated_models_are_reported_as_mixed(tmp_path):
+    run = export_deepeval_summary(
+        SidecarStore(tmp_path),
+        {"evaluated_output_models": ["model-a", "model-b"]},
+    )
+
+    assert run["model"] == "mixed"
