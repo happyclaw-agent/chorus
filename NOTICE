@@ -1,0 +1,6 @@
+Abbrivio includes design and implementation work derived from DataRobot Project
+Runway, Copyright 2025 DataRobot, licensed under the Apache License, Version 2.0.
+
+The dr-tracing snapshot supplied alongside Project Runway did not contain a
+license file. Abbrivio does not copy that package's implementation.
+

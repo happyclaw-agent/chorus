@@ -1,0 +1,176 @@
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+
+from fastapi.testclient import TestClient
+
+from abbrivio import AbbrivioCompletionObserver
+from abbrivio.otlp import OtlpJsonlSpanExporter, OtlpJsonlStore
+from abbrivio.sidecars import SidecarStore
+from chorus.app import create_app
+from chorus.promotion import AttributePromotionPolicy
+
+
+@dataclass(frozen=True)
+class Observation:
+    interaction_id: str = "interaction-any-state"
+    operation: str = "reply"
+    provider: str = "openai"
+    requested_model: str = "model-a"
+    returned_model: str | None = "model-a"
+    attempt: int = 1
+    is_fallback: bool = False
+    started_at: str = "2026-07-30T12:00:00Z"
+    latency_ms: int = 250
+    status: str = "ok"
+    http_status: int | None = 200
+    finish_reason: str | None = "stop"
+    input_tokens: int | None = 100
+    output_tokens: int | None = 25
+    total_tokens: int | None = 125
+    cached_input_tokens: int | None = 0
+    response_chars: int | None = 20
+    response_id: str | None = "response-1"
+    error_type: str | None = None
+    trace_id: str = "11" * 16
+    span_id: str = "22" * 8
+
+
+def _app_with_trace(tmp_path, *, policy=None, catalog=None):
+    trace_store = OtlpJsonlStore(tmp_path / "traces.otlp.jsonl")
+    observer = AbbrivioCompletionObserver(
+        OtlpJsonlSpanExporter(trace_store),
+        resource={"service.name": "example-agent", "service.version": "r1"},
+        app_attributes={
+            "gen_ai.input.messages": '[{"role":"user","content":"Help me"}]',
+            "gen_ai.output.messages": '[{"role":"assistant","content":"One step"}]',
+            "example.lifecycle": "generated",
+        },
+    )
+    reference = observer(Observation())
+    app = create_app(
+        tmp_path,
+        promotion_policy=policy,
+        evaluation_catalog=catalog,
+        trace_store=trace_store,
+        sidecar_store=SidecarStore(tmp_path),
+    )
+    return app, reference
+
+
+def test_generic_dashboard_reads_otlp_and_default_promotion_allows_any_state(tmp_path):
+    app, reference = _app_with_trace(tmp_path)
+    client = TestClient(app)
+
+    assert client.get("/api/health").json()["trace_format"] == "OTLP"
+    traces = client.get("/api/traces").json()["traces"]
+    assert traces[0]["trace_id"] == reference.trace_id
+    assert traces[0]["root_span_id"] == reference.span_id
+    summary = client.get("/api/summary").json()
+    assert summary["counts"]["trace_runs"] == 1
+    assert summary["counts"]["genai_calls"] == 1
+    assert summary["usage"]["total_tokens"] == 125
+    assert summary["latency_ms"]["p95"] == 250
+
+    promoted = client.post(
+        f"/api/traces/{reference.trace_id}/promote",
+        json={"span_id": reference.span_id},
+    )
+
+    assert promoted.status_code == 200
+    assert promoted.json()["input_text"] == "Help me"
+    assert promoted.json()["actual_output"] == "One step"
+    assert promoted.json()["trace"]["trace_id"] == reference.trace_id
+
+
+def test_missing_content_is_extraction_error_and_explicit_values_fix_it(tmp_path):
+    trace_store = OtlpJsonlStore(tmp_path / "traces.otlp.jsonl")
+    reference = AbbrivioCompletionObserver(OtlpJsonlSpanExporter(trace_store))(
+        Observation()
+    )
+    client = TestClient(create_app(tmp_path, trace_store=trace_store))
+
+    missing = client.post(f"/api/traces/{reference.trace_id}/promote", json={})
+    supplied = client.post(
+        f"/api/traces/{reference.trace_id}/promote",
+        json={"input_text": "manual input", "actual_output": "manual output"},
+    )
+
+    assert missing.status_code == 422
+    assert "evaluation extraction" in missing.json()["detail"]
+    assert supplied.status_code == 200
+    assert supplied.json()["actual_output"] == "manual output"
+
+
+def test_optional_generic_attribute_policy_can_deny_promotion(tmp_path):
+    policy = AttributePromotionPolicy.from_dict(
+        {
+            "rules": [
+                {
+                    "path": "span.attributes.example.lifecycle",
+                    "operator": "eq",
+                    "value": "reviewed",
+                }
+            ]
+        }
+    )
+    app, reference = _app_with_trace(tmp_path, policy=policy)
+
+    response = TestClient(app).post(
+        f"/api/traces/{reference.trace_id}/promote", json={}
+    )
+
+    assert response.status_code == 403
+    assert "example.lifecycle" in response.json()["detail"]
+
+
+def test_feedback_summary_is_raw_and_catalog_is_application_supplied(tmp_path):
+    app, reference = _app_with_trace(
+        tmp_path,
+        catalog=[{"name": "example-quality", "group": "single_turn"}],
+    )
+    client = TestClient(app)
+
+    recorded = client.post(
+        "/api/feedback",
+        json={
+            "trace_id": reference.trace_id,
+            "span_id": reference.span_id,
+            "kind": "thumbs_up",
+            "value": True,
+            "source": "application",
+        },
+    )
+
+    assert recorded.status_code == 200
+    assert client.get("/api/summary").json()["feedback"]["by_kind"] == {"thumbs_up": 1}
+    assert client.get("/api/evals").json()["catalog"] == [
+        {"name": "example-quality", "group": "single_turn"}
+    ]
+
+
+def test_otlp_export_endpoint_returns_canonical_trace_data(tmp_path):
+    app, reference = _app_with_trace(tmp_path)
+
+    response = TestClient(app).get("/api/otlp/traces")
+    document = response.json()
+    span = document["resourceSpans"][0]["scopeSpans"][0]["spans"][0]
+
+    assert response.headers["content-type"].startswith("application/json")
+    assert span["traceId"] == reference.trace_id
+    assert span["spanId"] == reference.span_id
+
+
+def test_ui_and_generic_server_contain_no_application_specific_copy(tmp_path):
+    app = create_app(tmp_path)
+    html = TestClient(app).get("/").text
+    text = re.sub(
+        r"<(?:style|script)\b.*?</(?:style|script)>|<[^>]+>",
+        " ",
+        html,
+        flags=re.DOTALL | re.IGNORECASE,
+    ).lower()
+
+    for forbidden in ("flex", "swoleby", "customer", "workout", "datarobot"):
+        assert forbidden not in text
