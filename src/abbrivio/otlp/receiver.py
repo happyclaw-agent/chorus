@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import gzip
 import io
+import secrets
 from typing import Protocol
 
 from fastapi import APIRouter, HTTPException, Request, Response
@@ -19,6 +20,25 @@ MAX_BODY_BYTES = 50 * 1024 * 1024
 
 class TraceRequestSink(Protocol):
     def append(self, request: object) -> None: ...
+
+
+def require_bearer_auth(request: Request, api_token: str | None) -> None:
+    """Require a matching Bearer token when ingestion auth is configured."""
+
+    if not api_token:
+        return
+    authorization = request.headers.get("authorization", "")
+    scheme, separator, credential = authorization.partition(" ")
+    matches = secrets.compare_digest(
+        credential.encode("utf-8"),
+        api_token.encode("utf-8"),
+    )
+    if scheme.lower() != "bearer" or not separator or not matches:
+        raise HTTPException(
+            status_code=401,
+            detail="invalid or missing bearer token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
 
 def _gunzip_bounded(body: bytes, max_body_bytes: int) -> bytes:
@@ -59,11 +79,13 @@ def create_otlp_router(
     store: TraceRequestSink,
     *,
     max_body_bytes: int = MAX_BODY_BYTES,
+    api_token: str | None = None,
 ) -> APIRouter:
     router = APIRouter()
 
     @router.post("/v1/traces")
     async def receive_traces(request: Request) -> Response:
+        require_bearer_auth(request, api_token)
         content_length = request.headers.get("content-length")
         if content_length:
             try:

@@ -6,6 +6,7 @@ from abbrivio.sidecars.contracts import (
     TraceRef,
     utc_now,
 )
+from abbrivio.sidecars.http import HttpSidecarError, HttpSidecarWriter
 from abbrivio.sidecars.store import SidecarStore
 
 __all__ = [
@@ -13,6 +14,8 @@ __all__ = [
     "EvaluationCase",
     "EvaluationRun",
     "FeedbackEvent",
+    "HttpSidecarError",
+    "HttpSidecarWriter",
     "SidecarStore",
     "TraceRef",
     "utc_now",

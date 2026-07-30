@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import fcntl
 import json
+import os
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
+
+from abbrivio.sidecars.contracts import TraceRef
 
 _FILES = {
     "content": "content.jsonl",
@@ -15,13 +21,62 @@ _FILES = {
     "eval_catalog": "eval_catalog.jsonl",
 }
 
+_PATH_LOCKS: dict[Path, threading.RLock] = {}
+_PATH_LOCKS_GUARD = threading.Lock()
+
+
+def _lock_for_path(path: Path) -> threading.RLock:
+    with _PATH_LOCKS_GUARD:
+        return _PATH_LOCKS.setdefault(path, threading.RLock())
+
+
+def _validated_record(record: dict[str, Any]) -> dict[str, Any]:
+    """Validate reserved linkage fields without restricting generic payloads."""
+    normalized = dict(record)
+    if "trace" not in record or record["trace"] is None:
+        return normalized
+
+    trace = record["trace"]
+    if not isinstance(trace, dict):
+        raise ValueError("sidecar trace must be a JSON object or null")
+
+    trace_id = trace.get("trace_id")
+    span_id = trace.get("span_id")
+    root_span_id = trace.get("root_span_id")
+    identifiers = {
+        "trace_id": trace_id,
+        "span_id": span_id,
+        "root_span_id": root_span_id,
+    }
+    for name, value in identifiers.items():
+        if value is not None and not isinstance(value, str):
+            raise ValueError(f"{name} must be a hexadecimal string")
+
+    if trace_id is None:
+        if span_id is not None or root_span_id is not None:
+            raise ValueError("span identifiers require trace_id")
+        return normalized
+
+    reference = TraceRef(
+        trace_id=trace_id,
+        span_id=span_id,
+        root_span_id=root_span_id,
+    )
+    normalized_trace = dict(trace)
+    normalized_trace["trace_id"] = reference.trace_id
+    if span_id is not None:
+        normalized_trace["span_id"] = reference.span_id
+    if root_span_id is not None:
+        normalized_trace["root_span_id"] = reference.root_span_id
+    normalized["trace"] = normalized_trace
+    return normalized
+
 
 class SidecarStore:
     """A generic, append-only store keyed by standard OTLP identifiers."""
 
     def __init__(self, root: str | Path):
         self.root = Path(root).expanduser().resolve()
-        self._lock = threading.RLock()
 
     def path_for(self, collection: str) -> Path:
         try:
@@ -30,14 +85,41 @@ class SidecarStore:
             raise ValueError(f"unknown sidecar collection: {collection}") from error
         return self.root / filename
 
+    @contextmanager
+    def _locked(self, path: Path) -> Iterator[None]:
+        """Serialize access to one sidecar across instances and processes."""
+        lock = _lock_for_path(path)
+        lock_path = Path(f"{path}.lock")
+        with lock:
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
+            with lock_path.open("a+b") as lock_handle:
+                fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+                try:
+                    yield
+                finally:
+                    fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+
     def append(self, collection: str, record: dict[str, Any]) -> None:
         path = self.path_for(collection)
-        payload = json.dumps(record, separators=(",", ":"), sort_keys=True)
-        with self._lock:
+        if not isinstance(record, dict):
+            raise TypeError("sidecar record must be a JSON object")
+        validated = _validated_record(record)
+        try:
+            payload = json.dumps(
+                validated,
+                allow_nan=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+        except (TypeError, ValueError) as error:
+            raise ValueError("sidecar record must be JSON serializable") from error
+        encoded = (payload + "\n").encode("utf-8")
+        with self._locked(path):
             path.parent.mkdir(parents=True, exist_ok=True)
-            with path.open("a", encoding="utf-8") as handle:
-                handle.write(payload + "\n")
+            with path.open("ab") as handle:
+                handle.write(encoded)
                 handle.flush()
+                os.fsync(handle.fileno())
 
     def read(
         self, collection: str, *, limit: int | None = None
@@ -49,15 +131,19 @@ class SidecarStore:
         path = self.path_for(collection)
         if not path.exists():
             return []
+        with self._locked(path):
+            if not path.exists():
+                return []
+            with path.open(encoding="utf-8") as handle:
+                lines = list(handle)
         records: list[dict[str, Any]] = []
-        with self._lock, path.open(encoding="utf-8") as handle:
-            for line in handle:
-                try:
-                    value = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if isinstance(value, dict):
-                    records.append(value)
+        for line in lines:
+            try:
+                value = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(value, dict):
+                records.append(value)
         if limit is not None:
             return records[-limit:]
         return records
@@ -75,7 +161,9 @@ class SidecarStore:
     ) -> dict[str, Any] | None:
         trace_match: dict[str, Any] | None = None
         for record in reversed(self.read("content")):
-            trace = record.get("trace") or {}
+            trace = record.get("trace")
+            if not isinstance(trace, dict):
+                continue
             if trace.get("trace_id") != trace_id:
                 continue
             if span_id is not None and trace.get("span_id") == span_id:
@@ -87,7 +175,9 @@ class SidecarStore:
     def content_for_trace(self, trace_id: str) -> list[dict[str, Any]]:
         latest: dict[str, dict[str, Any]] = {}
         for record in self.read("content"):
-            trace = record.get("trace") or {}
+            trace = record.get("trace")
+            if not isinstance(trace, dict):
+                continue
             if trace.get("trace_id") != trace_id:
                 continue
             key = str(trace.get("span_id") or "trace")
@@ -98,5 +188,6 @@ class SidecarStore:
         return [
             record
             for record in self.read("feedback")
-            if (record.get("trace") or {}).get("trace_id") == trace_id
+            if isinstance(record.get("trace"), dict)
+            and record["trace"].get("trace_id") == trace_id
         ]

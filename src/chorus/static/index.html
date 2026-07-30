@@ -30,7 +30,7 @@
       .lede, .muted { color: var(--muted); }
       .lede { max-width: 650px; margin: 8px 0 0; }
       .pill { border: 1px solid var(--line); border-radius: 99px; padding: 7px 11px; color: var(--accent); }
-      .grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; margin: 28px 0; }
+      .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px; margin: 28px 0; }
       .card, section { border: 1px solid var(--line); border-radius: 14px; background: color-mix(in srgb, var(--panel) 94%, transparent); }
       .card { padding: 15px; min-height: 92px; }
       .value { display: block; margin-top: 8px; font-size: 25px; font-weight: 700; }
@@ -81,6 +81,31 @@
     <script>
       const esc = (value) => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
       const compact = (value, size = 12) => value ? `${String(value).slice(0, size)}…` : "—";
+      let tokenPrompt = null;
+      const requestApiToken = async () => {
+        const stored = window.sessionStorage.getItem("chorus.apiToken");
+        if (stored) return stored;
+        if (!tokenPrompt) {
+          tokenPrompt = Promise.resolve().then(() => window.prompt("Chorus API token:")).then(value => {
+            if (value) window.sessionStorage.setItem("chorus.apiToken", value);
+            return value || "";
+          }).finally(() => { tokenPrompt = null; });
+        }
+        return tokenPrompt;
+      };
+      const apiFetch = async (url, options = {}) => {
+        const send = (token) => {
+          const headers = new Headers(options.headers || {});
+          if (token) headers.set("authorization", `Bearer ${token}`);
+          return fetch(url, {...options, headers});
+        };
+        const stored = window.sessionStorage.getItem("chorus.apiToken") || "";
+        let response = await send(stored);
+        if (response.status !== 401) return response;
+        window.sessionStorage.removeItem("chorus.apiToken");
+        const token = await requestApiToken();
+        return token ? send(token) : response;
+      };
       const formatCost = (values) => {
         const entries = Object.entries(values || {});
         if (!entries.length) return "unknown";
@@ -89,24 +114,26 @@
       };
       const cards = (summary) => [
         ["Trace runs", summary.counts.trace_runs],
-        ["Spans", summary.counts.spans],
         ["P95 latency", summary.latency_ms.p95 == null ? "—" : `${summary.latency_ms.p95} ms`],
+        ["Total tokens", summary.usage.total_tokens],
         ["Known cost", formatCost(summary.cost.by_currency)],
+        ["Cost coverage", summary.cost.coverage == null ? "—" : `${(summary.cost.coverage * 100).toFixed(0)}%`],
         ["Feedback", summary.counts.feedback],
         ["Eval cases", summary.counts.eval_cases],
+        ["Latest eval", summary.latest_eval ? `${summary.latest_eval.passed}/${summary.latest_eval.total}` : "—"],
       ];
 
       async function promote(traceId, rootSpanId) {
         const status = document.querySelector("#status");
         let body = { root_span_id: rootSpanId || null };
-        let response = await fetch(`/api/traces/${traceId}/promote`, {method: "POST", headers: {"content-type":"application/json"}, body: JSON.stringify(body)});
+        let response = await apiFetch(`/api/traces/${traceId}/promote`, {method: "POST", headers: {"content-type":"application/json"}, body: JSON.stringify(body)});
         if (response.status === 422) {
           const inputText = window.prompt("Input was not retained. Enter the evaluation input:");
           if (inputText === null) return;
           const actualOutput = window.prompt("Output was not retained. Enter the observed output:");
           if (actualOutput === null) return;
           body = {...body, input_text: inputText, actual_output: actualOutput};
-          response = await fetch(`/api/traces/${traceId}/promote`, {method: "POST", headers: {"content-type":"application/json"}, body: JSON.stringify(body)});
+          response = await apiFetch(`/api/traces/${traceId}/promote`, {method: "POST", headers: {"content-type":"application/json"}, body: JSON.stringify(body)});
         }
         const payload = await response.json();
         status.textContent = response.ok ? `Promoted ${payload.name}` : (payload.detail || "Promotion failed");
@@ -124,10 +151,10 @@
 
       async function refresh() {
         const [health, summary, traces, evals] = await Promise.all([
-          fetch("/api/health").then(r => r.json()),
-          fetch("/api/summary").then(r => r.json()),
-          fetch("/api/traces").then(r => r.json()),
-          fetch("/api/evals").then(r => r.json()),
+          apiFetch("/api/health").then(r => r.json()),
+          apiFetch("/api/summary").then(r => r.json()),
+          apiFetch("/api/traces").then(r => r.json()),
+          apiFetch("/api/evals").then(r => r.json()),
         ]);
         document.querySelector("#health").textContent = health.ok ? "OTLP receiver ready" : "unavailable";
         document.querySelector("#summary").innerHTML = cards(summary).map(([label, value]) => `<div class="card"><span class="muted">${esc(label)}</span><strong class="value">${esc(value)}</strong></div>`).join("");

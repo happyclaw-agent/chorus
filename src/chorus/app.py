@@ -10,13 +10,15 @@ import uuid
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import FastAPI, HTTPException, Query, Response
-from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
+from fastapi.responses import FileResponse, JSONResponse
+from pydantic import BaseModel, Field, ValidationError
+from starlette.concurrency import run_in_threadpool
 
 from abbrivio.otlp import OtlpJsonlStore, create_otlp_router, encode_otlp_json
+from abbrivio.otlp.receiver import require_bearer_auth
 from abbrivio.sidecars import (
     EvaluationCase,
     FeedbackEvent,
@@ -35,6 +37,7 @@ from chorus.promotion import (
 )
 
 STATIC_INDEX = Path(__file__).resolve().parent / "static" / "index.html"
+MAX_JSON_BODY_BYTES = 1024 * 1024
 
 
 class PromoteRequest(BaseModel):
@@ -62,6 +65,63 @@ class FeedbackRequest(BaseModel):
     attribution_method: str = "operator"
     confidence: float | None = None
     attributes: dict[str, Any] = Field(default_factory=dict)
+
+
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"invalid JSON constant: {value}")
+
+
+def _decode_json_object(body: bytes) -> dict[str, Any]:
+    value = json.loads(body, parse_constant=_reject_json_constant)
+    if not isinstance(value, dict):
+        raise TypeError("request body must be a JSON object")
+    return value
+
+
+async def _read_bounded_json_object(
+    request: Request,
+    *,
+    max_body_bytes: int,
+) -> dict[str, Any]:
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            declared_length = int(content_length)
+        except ValueError as error:
+            raise HTTPException(
+                status_code=400,
+                detail="invalid content length",
+            ) from error
+        if declared_length < 0:
+            raise HTTPException(status_code=400, detail="invalid content length")
+        if declared_length > max_body_bytes:
+            raise HTTPException(status_code=413, detail="JSON body is too large")
+
+    body = bytearray()
+    async for chunk in request.stream():
+        if len(body) + len(chunk) > max_body_bytes:
+            raise HTTPException(status_code=413, detail="JSON body is too large")
+        body.extend(chunk)
+    try:
+        return await run_in_threadpool(_decode_json_object, bytes(body))
+    except (TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise HTTPException(
+            status_code=422,
+            detail="request body must be a valid JSON object",
+        ) from error
+
+
+async def _bounded_json_object_dependency(request: Request) -> dict[str, Any]:
+    return await _read_bounded_json_object(
+        request,
+        max_body_bytes=request.app.state.max_json_body_bytes,
+    )
+
+
+JsonObject = Annotated[
+    dict[str, Any],
+    Depends(_bounded_json_object_dependency),
+]
 
 
 def _percentile(values: Sequence[float], percentile: float) -> float | None:
@@ -166,7 +226,9 @@ def _sidecars_by_trace(
 ) -> dict[str, list[dict[str, Any]]]:
     indexed: dict[str, list[dict[str, Any]]] = {}
     for record in records:
-        reference = record.get("trace") or {}
+        reference = record.get("trace")
+        if not isinstance(reference, Mapping):
+            continue
         trace_id = str(reference.get("trace_id") or "").lower()
         if trace_id:
             indexed.setdefault(trace_id, []).append(record)
@@ -179,7 +241,9 @@ def _sidecar_matches_root(
     root_span_id: str | None,
     span_ids: set[str],
 ) -> bool:
-    reference = record.get("trace") or {}
+    reference = record.get("trace")
+    if not isinstance(reference, Mapping):
+        return False
     referenced_root = str(reference.get("root_span_id") or "").lower() or None
     referenced_span = str(reference.get("span_id") or "").lower() or None
     if referenced_root is not None and referenced_root != root_span_id:
@@ -203,7 +267,9 @@ def _content_for_root(
             span_ids=span_ids,
         ):
             continue
-        reference = record.get("trace") or {}
+        reference = record.get("trace")
+        if not isinstance(reference, Mapping):
+            continue
         referenced_span = str(reference.get("span_id") or "").lower()
         referenced_root = str(reference.get("root_span_id") or "").lower()
         if referenced_span:
@@ -246,10 +312,20 @@ def create_app(
     evaluation_catalog: Sequence[dict[str, Any]] | None = None,
     trace_store: OtlpJsonlStore | None = None,
     sidecar_store: SidecarStore | None = None,
+    api_token: str | None = None,
+    max_json_body_bytes: int = MAX_JSON_BODY_BYTES,
 ) -> FastAPI:
+    if max_json_body_bytes <= 0:
+        raise ValueError("max_json_body_bytes must be positive")
     root = Path(data_dir or os.getenv("CHORUS_DATA_DIR", ".chorus"))
     traces = trace_store or OtlpJsonlStore(root / "traces.otlp.jsonl")
     sidecars = sidecar_store or SidecarStore(root)
+    configured_api_token = (
+        api_token if api_token is not None else os.getenv("CHORUS_API_TOKEN")
+    )
+    configured_api_token = (
+        configured_api_token.strip() if configured_api_token else None
+    )
     policy = promotion_policy or _policy_from_environment() or AllowAllPromotionPolicy()
     default_profile = DefaultGenAIExtractionProfile()
     profiles = {
@@ -277,7 +353,22 @@ def create_app(
     app.state.trace_store = traces
     app.state.sidecar_store = sidecars
     app.state.promotion_policy = policy
-    app.include_router(create_otlp_router(traces))
+    app.state.max_json_body_bytes = max_json_body_bytes
+    app.include_router(create_otlp_router(traces, api_token=configured_api_token))
+
+    @app.middleware("http")
+    async def protect_quality_api(request: Request, call_next):
+        if configured_api_token and request.url.path.startswith("/api/"):
+            try:
+                require_bearer_auth(request, configured_api_token)
+            except HTTPException as error:
+                return JSONResponse(
+                    status_code=error.status_code,
+                    content={"detail": error.detail},
+                    headers=error.headers,
+                )
+        return await call_next(request)
+
     summary_lock = threading.RLock()
     summary_cache_key: tuple[tuple[int, int, int], ...] | None = None
     summary_cache_value: dict[str, Any] | None = None
@@ -448,8 +539,33 @@ def create_app(
             "catalog": sidecars.latest("eval_catalog", "name"),
         }
 
+    @app.post("/api/sidecars/{collection}")
+    def ingest_sidecar(
+        collection: str,
+        record: JsonObject,
+    ) -> dict[str, Any]:
+        try:
+            sidecars.path_for(collection)
+        except ValueError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        try:
+            sidecars.append(collection, record)
+        except (TypeError, ValueError) as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        return record
+
     @app.post("/api/traces/{trace_id}/promote")
-    def promote(trace_id: str, request: PromoteRequest) -> dict[str, Any]:
+    def promote(
+        trace_id: str,
+        record: JsonObject,
+    ) -> dict[str, Any]:
+        try:
+            request = PromoteRequest.model_validate(record)
+        except ValidationError as error:
+            raise HTTPException(
+                status_code=422,
+                detail=error.errors(include_url=False, include_input=False),
+            ) from error
         trace = traces.get_trace(trace_id)
         if trace is None:
             raise HTTPException(status_code=404, detail="trace not found")
@@ -542,7 +658,16 @@ def create_app(
         return record
 
     @app.post("/api/feedback")
-    def record_feedback(request: FeedbackRequest) -> dict[str, Any]:
+    def record_feedback(
+        record: JsonObject,
+    ) -> dict[str, Any]:
+        try:
+            request = FeedbackRequest.model_validate(record)
+        except ValidationError as error:
+            raise HTTPException(
+                status_code=422,
+                detail=error.errors(include_url=False, include_input=False),
+            ) from error
         reference = None
         if request.trace_id:
             try:

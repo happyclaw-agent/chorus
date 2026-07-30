@@ -4,10 +4,13 @@ Chorus is a local quality workspace for traces, feedback, evaluation cases, and
 evaluation runs. Abbrivio is its instrumentation and interchange library.
 
 OTLP is the trace contract. Chorus accepts OTLP/HTTP protobuf and JSON at
-`POST /v1/traces`, stores one valid OTLP `TracesData` object per JSONL line,
-and can export the corpus back to standard OTLP. Abbrivio extensions are legal
-OpenTelemetry span attributes under `abbrivio.*`; application-specific
-attributes use the application's own namespace.
+`POST /v1/traces`, stores one complete OTLP `ExportTraceServiceRequest` JSON
+object per JSONL line, and can export the corpus back as a standard OTLP
+request. The newline is only append-friendly file framing; every individual
+record is the standard OTLP/HTTP trace payload rather than an Abbrivio trace
+schema. Abbrivio extensions are legal OpenTelemetry span attributes under
+`abbrivio.*`; application-specific attributes use the application's own
+namespace.
 
 Feedback, retained content, evaluation cases, evaluation catalogs, and
 evaluation results are versioned JSONL sidecars linked by real trace and span
@@ -24,6 +27,34 @@ python -m venv .venv
 Configure any OpenTelemetry SDK to send OTLP/HTTP to
 `http://127.0.0.1:8010/v1/traces`, then open
 `http://127.0.0.1:8010`.
+
+For a process that cannot share the local filesystem, `HttpSidecarWriter`
+posts generic records to `POST /api/sidecars/{collection}`. Set
+`CHORUS_API_TOKEN` on the server and pass the same bearer token to OTLP and
+sidecar clients when the server is reachable beyond localhost. When configured,
+the token also protects trace, content, feedback, evaluation, export, and
+promotion APIs; the browser UI prompts once and keeps the token only in session
+storage. Mutation bodies are bounded to 1 MiB by default. The trace path remains
+OTLP; the generic HTTP endpoint transports only the explicitly separate
+sidecars.
+
+```python
+from abbrivio import HttpSidecarWriter
+
+sidecars = HttpSidecarWriter(
+    "https://chorus.example",
+    bearer_token="replace-with-a-secret",
+    timeout=2.0,
+)
+sidecars.append(
+    "feedback",
+    {
+        "schema_version": 1,
+        "kind": "helpful",
+        "trace": {"trace_id": "0123456789abcdef0123456789abcdef"},
+    },
+)
+```
 
 ## Promotion
 

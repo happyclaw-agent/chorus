@@ -1,15 +1,19 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 import subprocess
 import sys
+import threading
 from dataclasses import dataclass
 
+import httpx
 from fastapi.testclient import TestClient
 
+import chorus.app as chorus_app_module
 from abbrivio import AbbrivioCompletionObserver
-from abbrivio.otlp import OtlpJsonlSpanExporter, OtlpJsonlStore
+from abbrivio.otlp import OtlpJsonlSpanExporter, OtlpJsonlStore, encode_otlp_json
 from abbrivio.sidecars import (
     ContentRecord,
     FeedbackEvent,
@@ -256,6 +260,21 @@ def test_trace_list_batches_and_scopes_sidecars_to_each_root(tmp_path, monkeypat
     assert read_calls.count("feedback") == 1
 
 
+def test_trace_list_skips_malformed_historical_sidecar_trace_fields(tmp_path):
+    app, _ = _app_with_trace(tmp_path)
+    content_path = app.state.sidecar_store.path_for("content")
+    feedback_path = app.state.sidecar_store.path_for("feedback")
+    content_path.write_text('{"trace":"legacy-corruption"}\n', encoding="utf-8")
+    feedback_path.write_text('{"trace":["legacy-corruption"]}\n', encoding="utf-8")
+
+    response = TestClient(app).get("/api/traces")
+
+    assert response.status_code == 200
+    assert len(response.json()["traces"]) == 1
+    assert response.json()["traces"][0]["content"] == []
+    assert response.json()["traces"][0]["feedback_count"] == 0
+
+
 def test_feedback_validates_linked_provenance_before_persist(tmp_path):
     app, first_root = _app_with_trace(tmp_path)
     trace_id = first_root.trace_id
@@ -345,6 +364,238 @@ def test_changed_catalog_definition_is_versioned_and_latest_is_served(tmp_path):
     stored = app.state.sidecar_store.read("eval_catalog")
     assert stored == [original, updated]
     assert TestClient(app).get("/api/evals").json()["catalog"] == [updated]
+
+
+def test_generic_sidecar_ingestion_accepts_objects_and_known_collections(tmp_path):
+    app = create_app(tmp_path)
+    client = TestClient(app)
+    record = {
+        "any_application_field": "is preserved",
+        "trace": {"trace_id": "11" * 16},
+    }
+
+    response = client.post("/api/sidecars/content", json=record)
+
+    assert response.status_code == 200
+    assert response.json() == record
+    assert app.state.sidecar_store.read("content") == [record]
+    assert client.post("/api/sidecars/not-a-collection", json=record).status_code == 404
+    assert client.post("/api/sidecars/content", json=[record]).status_code == 422
+    assert (
+        client.post("/api/sidecars/content", content=b'{"value":NaN}').status_code
+        == 422
+    )
+
+
+def test_mutation_bodies_are_authenticated_before_bounded_json_decode(
+    tmp_path, monkeypatch
+):
+    decoded = False
+
+    def unexpected_decode(body):
+        nonlocal decoded
+        decoded = True
+        raise AssertionError("unauthenticated body was decoded")
+
+    monkeypatch.setattr(chorus_app_module, "_decode_json_object", unexpected_decode)
+    client = TestClient(
+        create_app(
+            tmp_path,
+            api_token="ingestion-secret",
+            max_json_body_bytes=16,
+        )
+    )
+
+    for path in (
+        "/api/sidecars/content",
+        "/api/feedback",
+        f"/api/traces/{'11' * 16}/promote",
+    ):
+        response = client.post(path, content=b"{" + b"x" * 100)
+        assert response.status_code == 401
+        assert response.headers["www-authenticate"] == "Bearer"
+    assert decoded is False
+
+
+def test_mutation_bodies_bound_declared_and_chunked_requests(tmp_path):
+    app = create_app(
+        tmp_path,
+        api_token="ingestion-secret",
+        max_json_body_bytes=32,
+    )
+    authorization = {"authorization": "Bearer ingestion-secret"}
+    client = TestClient(app)
+
+    for path in (
+        "/api/sidecars/content",
+        "/api/feedback",
+        f"/api/traces/{'11' * 16}/promote",
+    ):
+        response = client.post(
+            path,
+            content=b"{}",
+            headers={**authorization, "content-length": "33"},
+        )
+        assert response.status_code == 413
+
+    async def send_chunked() -> httpx.Response:
+        async def chunks():
+            yield b'{"kind":"'
+            yield b"x" * 32
+            yield b'"}'
+
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+        ) as async_client:
+            return await async_client.post(
+                "/api/feedback",
+                content=chunks(),
+                headers=authorization,
+            )
+
+    assert asyncio.run(send_chunked()).status_code == 413
+    valid = client.post(
+        "/api/sidecars/content",
+        json={"ok": True},
+        headers=authorization,
+    )
+    assert valid.status_code == 200
+    assert valid.json() == {"ok": True}
+
+
+def test_mutation_bodies_reject_invalid_or_non_object_json(tmp_path):
+    client = TestClient(create_app(tmp_path))
+
+    for path in (
+        "/api/sidecars/content",
+        "/api/feedback",
+        f"/api/traces/{'11' * 16}/promote",
+    ):
+        assert client.post(path, content=b"not-json").status_code == 422
+        assert client.post(path, json=[]).status_code == 422
+
+
+def test_mutation_json_decode_runs_outside_the_event_loop(tmp_path, monkeypatch):
+    decoder_threads: list[int] = []
+    original_decode = chorus_app_module._decode_json_object
+
+    def recording_decode(body):
+        decoder_threads.append(threading.get_ident())
+        return original_decode(body)
+
+    monkeypatch.setattr(chorus_app_module, "_decode_json_object", recording_decode)
+    app = create_app(tmp_path)
+
+    async def send_request() -> tuple[int, httpx.Response]:
+        event_loop_thread = threading.get_ident()
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+        ) as client:
+            response = await client.post(
+                "/api/sidecars/content",
+                json={"content_id": "one"},
+            )
+        return event_loop_thread, response
+
+    event_loop_thread, response = asyncio.run(send_request())
+
+    assert response.status_code == 200
+    assert decoder_threads
+    assert all(thread_id != event_loop_thread for thread_id in decoder_threads)
+
+
+def test_api_token_guards_otlp_and_quality_api(tmp_path):
+    source_app, reference = _app_with_trace(tmp_path / "source")
+    payload = encode_otlp_json(source_app.state.trace_store.combined_request())
+    app = create_app(tmp_path / "target", api_token="ingestion-secret")
+    client = TestClient(app)
+
+    for headers in ({}, {"authorization": "Bearer wrong-secret"}):
+        traces = client.post(
+            "/v1/traces",
+            content=payload,
+            headers={"content-type": "application/json", **headers},
+        )
+        sidecar = client.post(
+            "/api/sidecars/feedback",
+            json={"kind": "application_event"},
+            headers=headers,
+        )
+        feedback = client.post(
+            "/api/feedback",
+            json={"kind": "operator_note"},
+            headers=headers,
+        )
+        promotion = client.post(
+            f"/api/traces/{reference.trace_id}/promote",
+            json={},
+            headers=headers,
+        )
+        assert traces.status_code == 401
+        assert traces.headers["www-authenticate"] == "Bearer"
+        assert sidecar.status_code == 401
+        assert sidecar.headers["www-authenticate"] == "Bearer"
+        assert feedback.status_code == 401
+        assert feedback.headers["www-authenticate"] == "Bearer"
+        assert promotion.status_code == 401
+        assert promotion.headers["www-authenticate"] == "Bearer"
+
+    authorization = {"authorization": "Bearer ingestion-secret"}
+    traces = client.post(
+        "/v1/traces",
+        content=payload,
+        headers={"content-type": "application/json", **authorization},
+    )
+    sidecar = client.post(
+        "/api/sidecars/feedback",
+        json={"kind": "application_event"},
+        headers=authorization,
+    )
+    feedback = client.post(
+        "/api/feedback",
+        json={"kind": "operator_note"},
+        headers=authorization,
+    )
+    promotion = client.post(
+        f"/api/traces/{reference.trace_id}/promote",
+        json={},
+        headers=authorization,
+    )
+
+    assert traces.status_code == 200
+    assert sidecar.status_code == 200
+    assert feedback.status_code == 200
+    assert promotion.status_code == 200
+    assert len(app.state.trace_store.read_requests()) == 1
+    assert app.state.sidecar_store.read("feedback")[0] == {"kind": "application_event"}
+    assert app.state.sidecar_store.read("feedback")[1]["kind"] == "operator_note"
+    assert client.get("/").status_code == 200
+    assert client.get("/api/health").status_code == 401
+    assert client.get("/api/health", headers=authorization).status_code == 200
+    assert client.get("/api/traces").status_code == 401
+    assert client.get("/api/traces", headers=authorization).status_code == 200
+
+
+def test_api_token_can_be_loaded_from_environment(tmp_path, monkeypatch):
+    monkeypatch.setenv("CHORUS_API_TOKEN", "environment-secret")
+    client = TestClient(create_app(tmp_path))
+
+    assert (
+        client.post("/api/sidecars/content", json={"content_id": "one"}).status_code
+        == 401
+    )
+    assert (
+        client.post(
+            "/api/sidecars/content",
+            json={"content_id": "one"},
+            headers={"authorization": "Bearer environment-secret"},
+        ).status_code
+        == 200
+    )
 
 
 def test_promotion_rejects_root_from_another_run_in_same_trace(tmp_path):
