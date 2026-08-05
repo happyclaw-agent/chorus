@@ -43,6 +43,17 @@ def test_spa_shell_supports_asgi_root_path_deployments(tmp_path):
     assert "<base " not in html
 
 
+def test_spa_shell_escapes_asgi_root_path_in_asset_attributes(tmp_path):
+    client = TestClient(create_app(tmp_path), root_path='/chorus&copy;"test')
+
+    html = client.get("/runs").text
+
+    assert 'window.ENV = {"BASE_PATH": "/chorus&copy;\\"test/"}' in html
+    assert 'src="/chorus&amp;copy;&quot;test/assets/' in html
+    assert 'href="/chorus&amp;copy;&quot;test/assets/' in html
+    assert 'href="/chorus&amp;copy;&quot;test/chorus-mark.svg"' in html
+
+
 def test_nested_spa_routes_load_assets_from_the_application_root(tmp_path):
     client = TestClient(create_app(tmp_path))
 
