@@ -163,6 +163,30 @@ describe('Add Look — from the Lookbooks page', () => {
     expect(within(dialog).queryByText('Third run input')).not.toBeInTheDocument();
   });
 
+  it('clears hidden selections when filters change so the saved count stays honest', async () => {
+    server.use(http.get('*/api/runs', () => HttpResponse.json(threeRuns())));
+    const calls = trackPromotes();
+    renderApp();
+
+    expect(await screen.findByText('planning-lookbook')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('lookbooks-add-look-button'));
+    const dialog = await screen.findByRole('dialog');
+
+    fireEvent.click(await within(dialog).findByTestId('add-look-select-trace-0000000000001'));
+    expect(within(dialog).getByText('1 selected')).toBeInTheDocument();
+    fireEvent.change(within(dialog).getByTestId('add-look-search'), {
+      target: { value: 'Second' },
+    });
+    expect(within(dialog).getByText('0 selected')).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByTestId('add-look-select-trace-0000000000002'));
+    fireEvent.click(within(dialog).getByTestId('add-look-save'));
+
+    await waitFor(() => expect(screen.getByTestId('add-look-success')).toBeInTheDocument());
+    expect(calls).toEqual([
+      { traceId: 'trace-0000000000002', dataset: 'planning-lookbook' },
+    ]);
+  });
+
   it('surfaces a partial promote failure without losing the successful ones', async () => {
     server.use(http.get('*/api/runs', () => HttpResponse.json(threeRuns())));
     server.use(

@@ -125,4 +125,16 @@ def export_deepeval_summary(
 
 
 def load_evaluation_cases(store: SidecarStore) -> list[dict[str, Any]]:
-    return store.latest("eval_cases", "case_id")
+    latest: dict[tuple[str, str], dict[str, Any]] = {}
+    for record in store.read("eval_cases"):
+        case_id = str(record.get("case_id") or "")
+        if not case_id:
+            continue
+        attributes = record.get("attributes") or {}
+        dataset = str(attributes.get("dataset") or "promoted-traces")
+        latest[(dataset, case_id)] = record
+    return [
+        record
+        for record in latest.values()
+        if not (record.get("attributes") or {}).get("chorus.deleted")
+    ]

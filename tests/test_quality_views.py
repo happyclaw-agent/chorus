@@ -133,20 +133,53 @@ def test_promoted_trace_appears_as_an_eval_case(tmp_path):
 def test_same_trace_can_be_promoted_into_multiple_eval_suites(tmp_path):
     client, _sidecars, reference = _client_with_trace(tmp_path)
 
+    case_ids = []
     for dataset in ("flex-golden", "flex-safety"):
         response = client.post(
             f"/api/traces/{reference.trace_id}/promote",
             json={"attributes": {"dataset": dataset}},
         )
         assert response.status_code == 200
+        case_ids.append(response.json()["case_id"])
 
     datasets = client.get("/api/datasets").json()
+    evaluation_cases = client.get("/api/evals").json()["cases"]
 
     assert [dataset["name"] for dataset in datasets] == [
         "flex-golden",
         "flex-safety",
     ]
     assert all(dataset["example_count"] == 1 for dataset in datasets)
+    assert len(set(case_ids)) == 2
+    assert len(evaluation_cases) == 2
+
+
+def test_deleted_eval_case_is_excluded_from_ui_and_runner_api(tmp_path):
+    client, _sidecars, reference = _client_with_trace(tmp_path)
+    promoted = client.post(
+        f"/api/traces/{reference.trace_id}/promote",
+        json={"attributes": {"dataset": "flex-golden"}},
+    ).json()
+
+    response = client.delete(
+        f"/api/datasets/flex-golden/examples/{promoted['case_id']}"
+    )
+
+    assert response.status_code == 200
+    assert client.get("/api/datasets").json() == []
+    assert client.get("/api/evals").json()["cases"] == []
+
+
+def test_eval_suite_names_reject_path_separators(tmp_path):
+    client, _sidecars, reference = _client_with_trace(tmp_path)
+
+    response = client.post(
+        f"/api/traces/{reference.trace_id}/promote",
+        json={"attributes": {"dataset": "safety/regression"}},
+    )
+
+    assert response.status_code == 422
+    assert "path separators" in response.json()["detail"]
 
 
 def test_multi_root_traces_keep_root_identity_in_runs_and_details(tmp_path):
@@ -264,9 +297,32 @@ def test_missing_token_usage_remains_unknown(tmp_path):
     )
 
     run = client.get("/api/runs").json()[0]
+    stats = client.get("/api/stats").json()
 
     assert run["input_tokens"] is None
     assert run["output_tokens"] is None
+    assert stats["agents"][0]["input_tokens"] is None
+    assert stats["agents"][0]["output_tokens"] is None
+    assert stats["totals"]["input_tokens"] is None
+    assert stats["totals"]["output_tokens"] is None
+
+
+def test_unknown_cost_remains_unknown_in_aggregates(tmp_path):
+    trace_store = OtlpJsonlStore(tmp_path / "traces.otlp.jsonl")
+    sidecars = SidecarStore(tmp_path)
+    AbbrivioCompletionObserver(
+        OtlpJsonlSpanExporter(trace_store), resource={"service.name": "agent"}
+    )(Observation())
+    client = TestClient(
+        create_app(tmp_path, trace_store=trace_store, sidecar_store=sidecars)
+    )
+
+    stats = client.get("/api/stats").json()
+    groups = client.get("/api/groups").json()
+
+    assert stats["agents"][0]["cost_usd"] is None
+    assert stats["totals"]["cost_usd"] is None
+    assert groups[0]["cost_usd"] is None
 
 
 def test_eval_runs_appear_as_aggregate_reports_not_model_matrices(tmp_path):
@@ -316,6 +372,25 @@ def test_invalid_agent_override_does_not_write_durable_state(tmp_path):
 
     assert response.status_code == 404
     assert sidecars.read("group_overrides") == []
+
+
+def test_removing_custom_group_assignment_restores_trace_group(tmp_path):
+    client, _sidecars, _reference = _client_with_trace(tmp_path)
+
+    assert (
+        client.post(
+            "/api/groups/custom-group/agents",
+            json={"agent_id": "example-agent"},
+        ).status_code
+        == 200
+    )
+    assert client.get("/api/runs").json()[0]["group_id"] == "custom-group"
+
+    assert (
+        client.delete("/api/groups/custom-group/agents/example-agent").status_code
+        == 200
+    )
+    assert client.get("/api/runs").json()[0]["group_id"] == "example-agent"
 
 
 def test_quality_mutations_share_the_configured_json_body_limit(tmp_path):

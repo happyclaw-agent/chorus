@@ -29,7 +29,8 @@ import { cn } from '@/lib/utils';
 const HOUR_MS = 3_600_000;
 const DAY_MS = 24 * HOUR_MS;
 
-function formatCompact(count: number): string {
+function formatCompact(count: number | null | undefined): string {
+  if (count == null || !Number.isFinite(count)) return '—';
   if (count >= 1_000_000) return `${(count / 1_000_000).toFixed(1)}M`;
   if (count >= 10_000) return `${Math.round(count / 1000)}k`;
   if (count >= 1_000) return `${(count / 1000).toFixed(1)}k`;
@@ -96,7 +97,10 @@ export function MonitorPage() {
   const stats = statsQuery.data;
   const totalErrors = stats?.agents.reduce((sum, agent) => sum + agent.errors, 0) ?? 0;
   const errorRate = stats && stats.totals.runs > 0 ? totalErrors / stats.totals.runs : 0;
-  const totalTokens = stats ? stats.totals.input_tokens + stats.totals.output_tokens : 0;
+  const totalTokens =
+    stats && stats.totals.input_tokens != null && stats.totals.output_tokens != null
+      ? stats.totals.input_tokens + stats.totals.output_tokens
+      : null;
 
   if (statsQuery.isLoading || runsQuery.isLoading) {
     return (
@@ -220,7 +224,9 @@ export function MonitorPage() {
         </ChartCard>
         <ChartCard title="Cost per agent" sub="total run cost attributed to each agent">
           <HBarChart
-            rows={stats.agents.map(agent => ({ label: agent.agent_id, value: agent.cost_usd }))}
+            rows={stats.agents.flatMap(agent =>
+              agent.cost_usd == null ? [] : [{ label: agent.agent_id, value: agent.cost_usd }]
+            )}
             barClass="bg-chart-4"
             formatValue={value => formatCost(value)}
           />

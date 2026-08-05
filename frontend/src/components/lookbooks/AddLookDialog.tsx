@@ -103,7 +103,7 @@ export function AddLookDialog({
     setSubmitting(true);
     setError(null);
 
-    const selectedRuns = rows.filter(run => selected.has(runKey(run)));
+    const selectedRuns = (runsQuery.data ?? []).filter(run => selected.has(runKey(run)));
     // One promote request per trace (no bulk endpoint), same batching as
     // AddToLookbookDialog: invalidate once after the whole batch settles
     // rather than once per trace.
@@ -182,12 +182,18 @@ export function AddLookDialog({
                   { value: 'error', label: 'Error' },
                 ]}
                 value={status}
-                onChange={event => setStatus(event.target.value)}
+                onChange={event => {
+                  setStatus(event.target.value);
+                  setSelected(new Set());
+                }}
               />
               <Input
                 data-testid="add-look-search"
                 value={search}
-                onChange={event => setSearch(event.target.value)}
+                onChange={event => {
+                  setSearch(event.target.value);
+                  setSelected(new Set());
+                }}
                 placeholder="Filter by input, output, or trace id…"
                 className="h-8 max-w-72 text-xs"
               />

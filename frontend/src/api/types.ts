@@ -45,7 +45,7 @@ export interface Group {
   group_name: string;
   run_count: number;
   errors: number;
-  cost_usd: number;
+  cost_usd: number | null;
   first_seen: string | null;
   last_seen: string | null;
   /** Lifecycle modes present in the group (subset of dev/ci/prod). */
@@ -212,9 +212,9 @@ export interface AgentStats {
   agent_id: string;
   runs: number;
   errors: number;
-  cost_usd: number;
-  input_tokens: number;
-  output_tokens: number;
+  cost_usd: number | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
   p50_ms: number;
   p90_ms: number;
   p95_ms: number;
@@ -224,9 +224,9 @@ export interface Stats {
   agents: AgentStats[];
   totals: {
     runs: number;
-    cost_usd: number;
-    input_tokens: number;
-    output_tokens: number;
+    cost_usd: number | null;
+    input_tokens: number | null;
+    output_tokens: number | null;
   };
 }
 

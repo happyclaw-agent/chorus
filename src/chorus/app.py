@@ -18,6 +18,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field, ValidationError
 from starlette.staticfiles import StaticFiles
 
+from abbrivio.deepeval import load_evaluation_cases
 from abbrivio.otlp import OtlpJsonlStore, create_otlp_router, encode_otlp_json
 from abbrivio.otlp.receiver import require_bearer_auth
 from abbrivio.sidecars import (
@@ -559,7 +560,7 @@ def create_app(
         runs = list(reversed(sidecars.read("eval_runs", limit=25)))
         return {
             "runs": runs,
-            "cases": sidecars.latest("eval_cases", "case_id"),
+            "cases": load_evaluation_cases(sidecars),
             "catalog": sidecars.latest("eval_catalog", "name"),
         }
 
@@ -709,8 +710,20 @@ def create_app(
                 reference.trace_id,
                 reference.span_id or reference.root_span_id or "trace",
                 profile.profile_id,
+                str(request.attributes.get("dataset") or "promoted-traces"),
             )
         )
+        dataset = request.attributes.get("dataset")
+        if dataset is not None and (
+            not isinstance(dataset, str) or not dataset.strip()
+        ):
+            raise HTTPException(
+                status_code=422, detail="dataset must be a non-empty string"
+            )
+        if isinstance(dataset, str) and ("/" in dataset or "\\" in dataset):
+            raise HTTPException(
+                status_code=422, detail="dataset cannot contain path separators"
+            )
         case = EvaluationCase(
             schema_version=1,
             case_id=str(uuid.uuid5(uuid.NAMESPACE_URL, f"chorus:{identity}")),
@@ -824,7 +837,11 @@ def create_app(
 
     @app.get("/{full_path:path}", include_in_schema=False)
     def spa_fallback(full_path: str) -> FileResponse:
-        if full_path.startswith("api/") or Path(full_path).suffix:
+        if (
+            full_path.startswith("api/")
+            or full_path.startswith("assets/")
+            or ("/" not in full_path and Path(full_path).suffix)
+        ):
             raise HTTPException(status_code=404, detail="not found")
         return FileResponse(STATIC_INDEX)
 

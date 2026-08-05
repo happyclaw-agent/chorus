@@ -24,6 +24,7 @@ def test_spa_routes_serve_the_same_application_shell(tmp_path):
     client = TestClient(create_app(tmp_path))
 
     assert client.get("/traces/example").text == client.get("/").text
+    assert client.get("/groups/example.agent").text == client.get("/").text
     assert client.get("/monitor").text == client.get("/").text
     assert client.get("/runs").text == client.get("/").text
     assert client.get("/evals").text == client.get("/").text

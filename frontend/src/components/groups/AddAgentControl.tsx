@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Plus, UserPlus } from 'lucide-react';
+import { UserPlus } from 'lucide-react';
 
 import { ApiError } from '@/api/client';
 import { useAddAgentToGroup, useStats } from '@/api/hooks';
@@ -32,15 +32,6 @@ export function AddAgentControl({
     .map(a => a.agent_id)
     .filter(id => !memberSet.has(id));
   const candidates = nonMemberIds.filter(id => id.toLowerCase().includes(query.toLowerCase()));
-
-  // Bug #2: an agent that hasn't produced any traces yet will never show up
-  // in GET /api/stats, so there'd otherwise be no way to add it. Offer a
-  // "create" option whenever the typed name doesn't exactly (case
-  // -insensitively) match an existing non-member agent — the backend's
-  // add_agent_to_group accepts any agent_id unconditionally.
-  const trimmedQuery = query.trim();
-  const hasExactMatch = nonMemberIds.some(id => id.toLowerCase() === trimmedQuery.toLowerCase());
-  const showCreateOption = trimmedQuery.length > 0 && !hasExactMatch;
 
   function handleSelect(agentId: string) {
     setError(null);
@@ -93,7 +84,7 @@ export function AddAgentControl({
             <div className="px-3 py-2 text-xs text-muted-foreground">Loading…</div>
           ) : (
             <>
-              {candidates.length === 0 && !showCreateOption ? (
+              {candidates.length === 0 ? (
                 <div className="px-3 py-2 text-xs text-muted-foreground">No matching agents</div>
               ) : (
                 candidates.map(agentId => (
@@ -113,22 +104,6 @@ export function AddAgentControl({
                   </Button>
                 ))
               )}
-              {showCreateOption ? (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  className="flex h-auto w-full items-center gap-1.5 justify-start truncate rounded-none border-t border-border px-3 py-1.5 text-left font-mono text-xs text-primary"
-                  onMouseDown={event => {
-                    // onMouseDown so this fires before the input's onBlur closes the list
-                    event.preventDefault();
-                    handleSelect(trimmedQuery);
-                  }}
-                  data-testid="group-add-agent-create-option"
-                >
-                  <Plus className="size-3 shrink-0" aria-hidden />
-                  <span className="truncate">Create &quot;{trimmedQuery}&quot;</span>
-                </Button>
-              ) : null}
             </>
           )}
         </div>

@@ -255,21 +255,12 @@ describe('Manage group members', () => {
     expect(screen.queryByTestId('group-add-agent-create-option')).not.toBeInTheDocument();
   });
 
-  it('typing a name with no matching candidate offers to create it, and selecting it adds the brand-new agent to the group', async () => {
-    let agentIds = ['claude-code'];
+  it('does not offer agents that have no traced runs', async () => {
     server.use(
       http.get('*/api/groups/:groupId', () =>
-        HttpResponse.json({ group: makeGroup({ agent_ids: agentIds }), lanes: emptyLanes })
+        HttpResponse.json({ group: makeGroup({ agent_ids: ['claude-code'] }), lanes: emptyLanes })
       ),
-      http.get('*/api/stats', () => HttpResponse.json(statsPayload)),
-      http.post('*/api/groups/:groupId/agents', async ({ request }) => {
-        const body = (await request.json()) as { agent_id: string };
-        agentIds = [...agentIds, body.agent_id];
-        return HttpResponse.json({
-          group: makeGroup({ agent_ids: agentIds }),
-          lanes: emptyLanes,
-        });
-      })
+      http.get('*/api/stats', () => HttpResponse.json(statsPayload))
     );
     renderApp('/groups/emea-planning');
 
@@ -278,13 +269,7 @@ describe('Manage group members', () => {
     });
 
     expect(screen.queryByTestId('group-add-agent-option-brand-new-agent')).not.toBeInTheDocument();
-    const createOption = await screen.findByTestId('group-add-agent-create-option');
-    expect(createOption).toHaveTextContent('brand-new-agent');
-
-    // onMouseDown (not onClick) so the selection lands before input blur
-    // closes the panel — fireEvent.click alone never triggers it.
-    fireEvent.mouseDown(createOption);
-
-    expect(await screen.findByTestId('group-member-brand-new-agent')).toBeInTheDocument();
+    expect(screen.queryByTestId('group-add-agent-create-option')).not.toBeInTheDocument();
+    expect(screen.getByText('No matching agents')).toBeInTheDocument();
   });
 });

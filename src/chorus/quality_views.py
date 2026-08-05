@@ -52,6 +52,13 @@ def _percentile(values: Sequence[float], percentile: float) -> float:
     return ordered[lower] + (ordered[upper] - ordered[lower]) * fraction
 
 
+def _complete_sum(rows: Sequence[Mapping[str, Any]], field: str) -> float | int | None:
+    values = [row.get(field) for row in rows]
+    if any(value is None for value in values):
+        return None
+    return sum(values)
+
+
 def _message_text(value: Any) -> str | None:
     if value is None:
         return None
@@ -218,6 +225,10 @@ class QualityView:
         runs = [
             self._run(trace, content, metadata) for trace in self.traces.trace_views()
         ]
+        base_groups = {
+            id(run): (run.get("group_id"), run.get("group_name")) for run in runs
+        }
+        active_assignments: dict[int, str] = {}
         overrides = self.sidecars.read("group_overrides")
         for override in overrides:
             kind = override.get("type")
@@ -228,11 +239,16 @@ class QualityView:
                     if run["agent_id"] == agent_id:
                         run["group_id"] = group_id
                         run["group_name"] = str(override.get("group_name") or group_id)
+                        active_assignments[id(run)] = group_id
             elif kind == "remove_agent" and agent_id and group_id:
                 for run in runs:
                     if run["agent_id"] == agent_id and run["group_id"] == group_id:
-                        run["group_id"] = None
-                        run["group_name"] = None
+                        if active_assignments.get(id(run)) == group_id:
+                            run["group_id"], run["group_name"] = base_groups[id(run)]
+                            active_assignments.pop(id(run), None)
+                        else:
+                            run["group_id"] = None
+                            run["group_name"] = None
         return runs
 
     def _run(
@@ -622,11 +638,13 @@ class QualityView:
                     "agent_id": agent_id,
                     "runs": len(rows),
                     "errors": sum(row["status"] == "error" for row in rows),
-                    "cost_usd": round(
-                        sum(row.get("cost_usd") or 0 for row in rows), 10
+                    "cost_usd": (
+                        round(cost, 10)
+                        if (cost := _complete_sum(rows, "cost_usd")) is not None
+                        else None
                     ),
-                    "input_tokens": sum(row.get("input_tokens") or 0 for row in rows),
-                    "output_tokens": sum(row.get("output_tokens") or 0 for row in rows),
+                    "input_tokens": _complete_sum(rows, "input_tokens"),
+                    "output_tokens": _complete_sum(rows, "output_tokens"),
                     "p50_ms": round(_percentile(latencies, 0.50), 3),
                     "p90_ms": round(_percentile(latencies, 0.90), 3),
                     "p95_ms": round(_percentile(latencies, 0.95), 3),
@@ -636,9 +654,13 @@ class QualityView:
             "agents": agents,
             "totals": {
                 "runs": len(runs),
-                "cost_usd": round(sum(run.get("cost_usd") or 0 for run in runs), 10),
-                "input_tokens": sum(run.get("input_tokens") or 0 for run in runs),
-                "output_tokens": sum(run.get("output_tokens") or 0 for run in runs),
+                "cost_usd": (
+                    round(cost, 10)
+                    if (cost := _complete_sum(runs, "cost_usd")) is not None
+                    else None
+                ),
+                "input_tokens": _complete_sum(runs, "input_tokens"),
+                "output_tokens": _complete_sum(runs, "output_tokens"),
             },
         }
 
@@ -660,8 +682,10 @@ class QualityView:
                     "group_name": rows[0].get("group_name") or group_id,
                     "run_count": len(rows),
                     "errors": sum(row["status"] == "error" for row in rows),
-                    "cost_usd": round(
-                        sum(row.get("cost_usd") or 0 for row in rows), 10
+                    "cost_usd": (
+                        round(cost, 10)
+                        if (cost := _complete_sum(rows, "cost_usd")) is not None
+                        else None
                     ),
                     "first_seen": min(
                         (row["started_at"] for row in rows if row["started_at"]),
@@ -945,7 +969,7 @@ def create_quality_router(
                     "group_name": group_id,
                     "run_count": 0,
                     "errors": 0,
-                    "cost_usd": 0,
+                    "cost_usd": None,
                     "first_seen": None,
                     "last_seen": None,
                     "modes": [],
@@ -1024,6 +1048,10 @@ def create_quality_router(
         new_name = str(body.get("name") or "").strip()
         if not new_name:
             raise HTTPException(status_code=422, detail="name is required")
+        if "/" in new_name or "\\" in new_name:
+            raise HTTPException(
+                status_code=422, detail="name cannot contain path separators"
+            )
         source = next((row for row in view.datasets() if row["name"] == name), None)
         if source is None:
             raise HTTPException(status_code=404, detail="dataset not found")
