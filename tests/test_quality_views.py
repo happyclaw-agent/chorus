@@ -669,6 +669,72 @@ def test_eval_result_uses_only_root_when_logical_span_was_not_exported(tmp_path)
     assert execution["input_tokens"] == 100
 
 
+def test_eval_result_aggregates_roots_under_missing_logical_parent(tmp_path):
+    trace_store = OtlpJsonlStore(tmp_path / "traces.otlp.jsonl")
+    sidecars = SidecarStore(tmp_path)
+    observer = AbbrivioCompletionObserver(
+        OtlpJsonlSpanExporter(trace_store),
+        app_attributes={"abbrivio.cost.amount": 0.001},
+    )
+    trace_id = "11" * 16
+    logical_parent = "44" * 8
+    observer(
+        Observation(
+            trace_id=trace_id,
+            span_id="22" * 8,
+            parent_span_id=logical_parent,
+            latency_ms=111,
+            input_tokens=10,
+            output_tokens=1,
+            total_tokens=11,
+        )
+    )
+    observer(
+        Observation(
+            trace_id=trace_id,
+            span_id="33" * 8,
+            parent_span_id=logical_parent,
+            latency_ms=333,
+            input_tokens=30,
+            output_tokens=3,
+            total_tokens=33,
+        )
+    )
+    sidecars.append(
+        "eval_runs",
+        {"run_id": "fragmented-run", "source": "deepeval", "total": 1},
+    )
+    sidecars.append(
+        "eval_results",
+        {
+            "result_id": "result-1",
+            "run_id": "fragmented-run",
+            "example_id": "example-1",
+            "trace": {
+                "trace_id": trace_id,
+                "span_id": logical_parent,
+                "root_span_id": logical_parent,
+            },
+        },
+    )
+    client = TestClient(
+        create_app(tmp_path, trace_store=trace_store, sidecar_store=sidecars)
+    )
+
+    execution = client.get("/api/eval-runs/fragmented-run/results").json()["results"][
+        0
+    ]["execution"]
+    trace = client.get(f"/api/ui/traces/{trace_id}").json()
+
+    assert execution["root_span_id"] is None
+    assert execution["latency_ms"] == 333
+    assert execution["input_tokens"] == 40
+    assert execution["output_tokens"] == 4
+    assert execution["cost_usd"] == 0.002
+    assert trace["run"]["input_tokens"] == 40
+    assert trace["spans"]["span_id"] == "synthetic-root"
+
+
 def test_eval_run_normalizes_nullable_evaluated_models(tmp_path):
     client, sidecars, _reference = _client_with_trace(tmp_path)
     sidecars.append(

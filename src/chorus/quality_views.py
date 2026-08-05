@@ -524,6 +524,15 @@ class QualityView:
     ) -> dict[str, Any] | None:
         normalized = trace_id.lower()
         normalized_root = root_span_id.lower() if root_span_id else None
+        if normalized_root is None:
+            trace = self.traces.get_trace(normalized)
+            if trace is None:
+                return None
+            return self._run(
+                trace,
+                self.sidecars.read("content"),
+                _trace_meta(self.sidecars.read("trace_meta")),
+            )
         return next(
             (
                 row
@@ -542,6 +551,8 @@ class QualityView:
     ) -> dict[str, Any] | None:
         normalized = trace_id.lower()
         normalized_root = root_span_id.lower() if root_span_id else None
+        if normalized_root is None:
+            return self.traces.get_trace(normalized)
         return next(
             (
                 trace
@@ -617,6 +628,12 @@ class QualityView:
             if span.get("span_id")
         }
         normalized_root = str(trace.get("root_span_id") or "").lower() or None
+        if normalized_root is None:
+            span_ids.update(
+                str(span.get("parent_span_id") or "").lower()
+                for span in trace.get("spans") or []
+                if span.get("parent_span_id")
+            )
         feedback = [
             record
             for record in self.sidecars.feedback_for_trace(trace_id.lower())
@@ -961,14 +978,31 @@ class QualityView:
         for execution in self._runs():
             executions_by_trace[str(execution.get("trace_id") or "")].append(execution)
         span_ids_by_root: dict[tuple[str, str | None], set[str]] = {}
+        parent_id_by_root: dict[tuple[str, str | None], str | None] = {}
+        timing_by_root: dict[tuple[str, str | None], tuple[int, int]] = {}
         for trace_view in self.traces.trace_views():
             trace_id = str(trace_view.get("trace_id") or "").lower()
             root_span_id = str(trace_view.get("root_span_id") or "").lower() or None
+            root_span = next(
+                (
+                    span
+                    for span in trace_view.get("spans") or []
+                    if str(span.get("span_id") or "").lower() == root_span_id
+                ),
+                {},
+            )
             span_ids_by_root[(trace_id, root_span_id)] = {
                 str(span.get("span_id") or "").lower()
                 for span in trace_view.get("spans") or []
                 if span.get("span_id")
             }
+            parent_id_by_root[(trace_id, root_span_id)] = (
+                str(root_span.get("parent_span_id") or "").lower() or None
+            )
+            timing_by_root[(trace_id, root_span_id)] = (
+                int(trace_view.get("start_time_unix_nano") or 0),
+                int(trace_view.get("end_time_unix_nano") or 0),
+            )
 
         rows: list[dict[str, Any]] = []
         for record in latest.values():
@@ -990,12 +1024,52 @@ class QualityView:
                     )
                 return len(candidates) == 1
 
-            execution = next(
-                (candidate for candidate in candidates if matches_execution(candidate)),
-                None,
-            )
-            if execution is None and len(candidates) == 1:
-                execution = candidates[0]
+            executions = [
+                candidate for candidate in candidates if matches_execution(candidate)
+            ]
+            if not executions and (referenced_span_id or referenced_root_id):
+                logical_ids = {referenced_span_id, referenced_root_id} - {None}
+                executions = [
+                    candidate
+                    for candidate in candidates
+                    if parent_id_by_root.get((trace_id, candidate.get("root_span_id")))
+                    in logical_ids
+                ]
+            if not executions and len(candidates) == 1:
+                executions = candidates
+
+            execution: dict[str, Any] | None = None
+            if len(executions) == 1:
+                execution = executions[0]
+            elif executions:
+                timings = [
+                    timing_by_root[(trace_id, candidate.get("root_span_id"))]
+                    for candidate in executions
+                ]
+                execution = {
+                    "trace_id": trace_id,
+                    "root_span_id": None,
+                    "latency_ms": (
+                        max(end for _start, end in timings)
+                        - min(start for start, _end in timings)
+                    )
+                    / 1_000_000,
+                    "input_tokens": _complete_sum(executions, "input_tokens"),
+                    "output_tokens": _complete_sum(executions, "output_tokens"),
+                    "cost_usd": _complete_sum(executions, "cost_usd"),
+                    "status": (
+                        "error"
+                        if any(item.get("status") == "error" for item in executions)
+                        else "ok"
+                    ),
+                    "models": sorted(
+                        {
+                            str(model)
+                            for item in executions
+                            for model in item.get("models") or []
+                        }
+                    ),
+                }
             rows.append(
                 {
                     **record,

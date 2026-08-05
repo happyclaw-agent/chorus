@@ -74,7 +74,7 @@ describe('Runs view', () => {
     expect(screen.getByRole('dialog')).toHaveTextContent('The response was not empathetic.');
     expect(screen.getByRole('link', { name: /Open execution trace/ })).toHaveAttribute(
       'href',
-      '/traces/abc123def4567890?root_span_id=exported-root'
+      '/traces/abc123def4567890'
     );
   });
 });

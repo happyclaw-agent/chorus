@@ -111,7 +111,7 @@ const evalResultPage = {
       trace: { trace_id: 'abc123def4567890', root_span_id: 'unexported-root' },
       execution: {
         trace_id: 'abc123def4567890',
-        root_span_id: 'exported-root',
+        root_span_id: null,
         latency_ms: 1234,
         input_tokens: 100,
         output_tokens: 50,

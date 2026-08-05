@@ -186,7 +186,9 @@ function ResultDetail({
                 <Link
                   to={traceDetailPath(
                     result.trace.trace_id,
-                    result.execution?.root_span_id ?? result.trace.root_span_id ?? undefined
+                    result.execution
+                      ? result.execution.root_span_id
+                      : (result.trace.root_span_id ?? undefined)
                   )}
                 >
                   Open execution trace
