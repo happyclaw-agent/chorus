@@ -221,6 +221,27 @@ def test_feedback_summary_is_raw_and_catalog_is_application_supplied(tmp_path):
     assert "results" not in client.get("/api/evals").json()
 
 
+def test_summary_counts_latest_append_only_evaluation_versions(tmp_path):
+    sidecars = SidecarStore(tmp_path)
+    sidecars.append("eval_runs", {"run_id": "run-1", "passed": 0})
+    sidecars.append("eval_runs", {"run_id": "run-1", "passed": 1})
+    sidecars.append(
+        "eval_results",
+        {"run_id": "run-1", "result_id": "result-1", "status": "failed"},
+    )
+    sidecars.append(
+        "eval_results",
+        {"run_id": "run-1", "result_id": "result-1", "status": "passed"},
+    )
+    client = TestClient(create_app(tmp_path, sidecar_store=sidecars))
+
+    summary = client.get("/api/summary").json()
+
+    assert summary["counts"]["eval_runs"] == 1
+    assert summary["counts"]["eval_results"] == 1
+    assert summary["latest_eval"]["passed"] == 1
+
+
 def test_trace_list_batches_and_scopes_sidecars_to_each_root(tmp_path, monkeypatch):
     app, first_root = _app_with_trace(tmp_path)
     trace_id = first_root.trace_id

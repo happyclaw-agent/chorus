@@ -456,8 +456,8 @@ def create_app(
                 if (span.get("attributes") or {}).get("gen_ai.operation.name")
             ]
             feedback = sidecars.deduplicated("feedback", "feedback_id")
-            eval_runs = sidecars.read("eval_runs")
-            eval_results = sidecars.read("eval_results")
+            eval_runs = sidecars.deduplicated("eval_runs", "run_id")
+            eval_results = sidecars.deduplicated("eval_results", "result_id")
             latencies = [float(row.get("latency_ms") or 0) for row in trace_views]
             costs_by_currency: Counter[str] = Counter()
             priced_calls = 0
