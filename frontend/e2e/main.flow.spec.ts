@@ -11,7 +11,7 @@ test.describe('Chorus shell', () => {
     await page.getByRole('link', { name: /Monitor/ }).click();
     await expect(page.getByRole('heading', { name: 'Monitor' })).toBeVisible();
 
-    await page.getByRole('link', { name: /Lookbooks/ }).click();
-    await expect(page.getByRole('heading', { name: 'Lookbooks' })).toBeVisible();
+    await page.getByRole('link', { name: /Evals/ }).click();
+    await expect(page.getByRole('heading', { name: 'Evals' })).toBeVisible();
   });
 });

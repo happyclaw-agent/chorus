@@ -271,10 +271,10 @@
 }
 .live-dot::before {
   opacity: 0.7;
-  animation: runway-ping 1.6s cubic-bezier(0, 0, 0.2, 1) infinite;
+  animation: chorus-live-ping 1.6s cubic-bezier(0, 0, 0.2, 1) infinite;
 }
 
-@keyframes runway-ping {
+@keyframes chorus-live-ping {
   75%,
   100% {
     transform: scale(2.4);

@@ -14,7 +14,7 @@ import { PageHeader } from '@/components/layout/PageHeader';
 import { DrilldownStat } from '@/components/stats/DrilldownStat';
 import { StatusPill } from '@/components/traces/StatusPill';
 import { Skeleton } from '@/components/ui/skeleton';
-import { PATHS, tracesUrlForGroup } from '@/constants/path';
+import { PATHS, traceDetailPath, tracesUrlForGroup } from '@/constants/path';
 import { formatCost, formatDuration, shortTraceId, truncate } from '@/lib/format';
 import { cn } from '@/lib/utils';
 
@@ -126,7 +126,7 @@ function RunRow({ run }: { run: Run }) {
     >
       <div className="flex items-center gap-2">
         <Link
-          to={`/traces/${run.trace_id}`}
+          to={traceDetailPath(run.trace_id, run.root_span_id)}
           className="font-mono text-xs text-link hover:underline"
         >
           {shortTraceId(run.trace_id)}
@@ -136,7 +136,7 @@ function RunRow({ run }: { run: Run }) {
         <span className="ml-auto font-mono text-[11px] text-muted-foreground">
           {formatDuration(run.latency_ms)} · {formatCost(run.cost_usd)}
         </span>
-        <PromoteMenu traceId={run.trace_id} />
+        <PromoteMenu traceId={run.trace_id} rootSpanId={run.root_span_id ?? undefined} />
       </div>
       <div
         className="mt-1.5 truncate text-xs text-secondary-foreground"
@@ -235,7 +235,7 @@ function RelatedLookbooksPanel({ agentIds }: { agentIds: string[] }) {
   }, [datasetsQuery.data, agentIds]);
 
   return (
-    <Panel title="Related Lookbooks">
+    <Panel title="Related eval suites">
       <div className="p-3" data-testid="related-lookbooks-panel">
         {datasetsQuery.isLoading ? (
           <Skeleton className="h-16 w-full" />
@@ -244,21 +244,21 @@ function RelatedLookbooksPanel({ agentIds }: { agentIds: string[] }) {
             className="rounded-md border border-dashed border-border px-3 py-6 text-center text-xs text-muted-foreground"
             data-testid="related-lookbooks-empty"
           >
-            No Lookbooks yet from this group's agents.
+            No eval suites yet from this group's agents.
           </div>
         ) : (
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
             {related.map(dataset => (
               <Link
                 key={dataset.name}
-                to={PATHS.LOOKBOOKS}
+                to={PATHS.EVALS}
                 className="flex items-center gap-2 rounded-md border border-border bg-card px-3 py-2.5 text-xs hover:border-primary/40"
                 data-testid={`related-lookbook-${dataset.name}`}
               >
                 <BookOpen className="size-3.5 shrink-0 text-primary opacity-80" aria-hidden />
                 <span className="truncate font-medium text-foreground">{dataset.name}</span>
                 <span className="ml-auto shrink-0 font-mono text-[11px] text-muted-foreground">
-                  {dataset.example_count} {dataset.example_count === 1 ? 'Look' : 'Looks'}
+                  {dataset.example_count} {dataset.example_count === 1 ? 'eval case' : 'eval cases'}
                 </span>
               </Link>
             ))}

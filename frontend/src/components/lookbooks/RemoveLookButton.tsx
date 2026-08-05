@@ -44,7 +44,7 @@ export function RemoveLookButton({ dataset, exampleId }: { dataset: string; exam
       <Button
         variant="ghost"
         size="icon-sm"
-        aria-label="Remove Look"
+        aria-label="Remove eval case"
         data-testid={`look-remove-button-${exampleId}`}
         onClick={event => {
           event.stopPropagation();
@@ -62,11 +62,11 @@ export function RemoveLookButton({ dataset, exampleId }: { dataset: string; exam
             the row. Stop it here. */}
         <DialogContent onClick={event => event.stopPropagation()}>
           <DialogHeader>
-            <DialogTitle>Remove Look</DialogTitle>
+            <DialogTitle>Remove eval case</DialogTitle>
             <DialogDescription>
               Removes <span className="font-mono">{exampleId}</span> from{' '}
               <span className="font-mono">{dataset}</span>. The source trace is untouched — only
-              this Look leaves the Lookbook.
+              this eval case leaves the suite.
             </DialogDescription>
           </DialogHeader>
           {error ? (

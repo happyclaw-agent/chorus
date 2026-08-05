@@ -1,4 +1,4 @@
-/** Pure score parsing + display helpers for the Runway view.
+/** Pure score parsing and display helpers for eval run results.
  *
  * Grid/gate score values arrive stringified from the backend ("True"/"False"
  * for booleans, "0.92" for floats). The verdict/regression logic itself now

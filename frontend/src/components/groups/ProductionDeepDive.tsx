@@ -32,7 +32,11 @@ import { Link } from 'react-router-dom';
  * component. Signature is intentionally the requested
  * `attachTraceToComponent(component, traceId)` shape.
  */
-export type AttachTraceToComponent = (component: string, traceId: string | null) => void;
+export type AttachTraceToComponent = (
+  component: string,
+  traceId: string | null,
+  rootSpanId?: string
+) => void;
 
 function Panel({
   title,
@@ -96,7 +100,7 @@ function ComponentTraceRow({
         size="sm"
         variant="secondary"
         onClick={onAttach}
-        title="Attach this trace as a Look for the selected component"
+        title="Attach this trace as an eval case for the selected component"
       >
         <Plus className="size-3.5" />
         Add to eval
@@ -105,9 +109,9 @@ function ComponentTraceRow({
   );
 }
 
-function SelectedTraceDetail({ traceId }: { traceId: string }) {
-  const traceQuery = useTrace(traceId);
-  const logsQuery = useTraceLogs(traceId);
+function SelectedTraceDetail({ traceId, rootSpanId }: { traceId: string; rootSpanId?: string }) {
+  const traceQuery = useTrace(traceId, rootSpanId);
+  const logsQuery = useTraceLogs(traceId, rootSpanId);
 
   const serviceColors = useMemo(() => {
     const services: Array<string | null | undefined> = [];
@@ -136,7 +140,10 @@ function SelectedTraceDetail({ traceId }: { traceId: string }) {
       <Panel
         title={`Multi-service waterfall · ${shortTraceId(traceId)}`}
         action={
-          <Link to={traceDetailPath(traceId)} className="text-[11px] text-link hover:underline">
+          <Link
+            to={traceDetailPath(traceId, rootSpanId)}
+            className="text-[11px] text-link hover:underline"
+          >
             Open full trace →
           </Link>
         }
@@ -185,7 +192,7 @@ export function ProductionDeepDive({
 }) {
   const graphQuery = useGroupGraph(groupId);
   const [selectedComponent, setSelectedComponent] = useState<string | null>(null);
-  const [selectedTraceId, setSelectedTraceId] = useState<string | null>(null);
+  const [selectedRunKey, setSelectedRunKey] = useState<string | null>(null);
   const [attachTarget, setAttachTarget] = useState<{
     component: string;
     traceId: string | null;
@@ -194,6 +201,7 @@ export function ProductionDeepDive({
   const [promoteTarget, setPromoteTarget] = useState<{
     component: string;
     traceId: string;
+    rootSpanId?: string;
   } | null>(null);
 
   // Eval-authoring seam. A supplied handler fully owns it. Otherwise: attaching
@@ -201,18 +209,23 @@ export function ProductionDeepDive({
   // stays a stub (it needs a batch promote the backend doesn't expose yet).
   const attachTraceToComponent: AttachTraceToComponent =
     onAttachTraceToComponent ??
-    ((component, traceId) =>
-      traceId ? setPromoteTarget({ component, traceId }) : setAttachTarget({ component, traceId }));
+    ((component, traceId, rootSpanId) =>
+      traceId
+        ? setPromoteTarget({ component, traceId, rootSpanId })
+        : setAttachTarget({ component, traceId }));
 
   const selectComponent = (id: string) => {
     setSelectedComponent(previous => (previous === id ? null : id));
-    setSelectedTraceId(null);
+    setSelectedRunKey(null);
   };
 
   const componentRuns = useMemo(
     () =>
       selectedComponent ? prodRuns.filter(run => run.services.includes(selectedComponent)) : [],
     [prodRuns, selectedComponent]
+  );
+  const selectedRun = componentRuns.find(
+    run => `${run.trace_id}:${run.root_span_id ?? ''}` === selectedRunKey
   );
 
   return (
@@ -252,7 +265,7 @@ export function ProductionDeepDive({
                 size="sm"
                 variant="secondary"
                 onClick={() => attachTraceToComponent(selectedComponent, null)}
-                title={`Attach traces as Looks for ${selectedComponent}`}
+                title={`Attach traces as eval cases for ${selectedComponent}`}
               >
                 <Plus className="size-3.5" />
                 Add to eval
@@ -267,11 +280,17 @@ export function ProductionDeepDive({
               <div>
                 {componentRuns.map(run => (
                   <ComponentTraceRow
-                    key={run.trace_id}
+                    key={`${run.trace_id}:${run.root_span_id ?? ''}`}
                     run={run}
-                    selected={selectedTraceId === run.trace_id}
-                    onSelect={() => setSelectedTraceId(run.trace_id)}
-                    onAttach={() => attachTraceToComponent(selectedComponent, run.trace_id)}
+                    selected={selectedRunKey === `${run.trace_id}:${run.root_span_id ?? ''}`}
+                    onSelect={() => setSelectedRunKey(`${run.trace_id}:${run.root_span_id ?? ''}`)}
+                    onAttach={() =>
+                      attachTraceToComponent(
+                        selectedComponent,
+                        run.trace_id,
+                        run.root_span_id ?? undefined
+                      )
+                    }
                   />
                 ))}
               </div>
@@ -279,8 +298,11 @@ export function ProductionDeepDive({
           </Panel>
 
           <div>
-            {selectedTraceId ? (
-              <SelectedTraceDetail traceId={selectedTraceId} />
+            {selectedRun ? (
+              <SelectedTraceDetail
+                traceId={selectedRun.trace_id}
+                rootSpanId={selectedRun.root_span_id ?? undefined}
+              />
             ) : (
               <div className="flex h-full min-h-40 items-center justify-center rounded-lg border border-dashed border-border bg-card/40 px-4 py-8 text-center text-xs text-muted-foreground">
                 Select a trace to see its multi-service waterfall and correlated logs.
@@ -298,6 +320,7 @@ export function ProductionDeepDive({
       {promoteTarget ? (
         <PromoteToLookDialog
           traceId={promoteTarget.traceId}
+          rootSpanId={promoteTarget.rootSpanId}
           defaultDataset={promoteTarget.component}
           open={promoteTarget !== null}
           onOpenChange={value => !value && setPromoteTarget(null)}
@@ -311,7 +334,7 @@ export function ProductionDeepDive({
             <DialogTitle>Add to eval</DialogTitle>
             <DialogDescription>
               Coming at the hackathon: attach{' '}
-              {attachTarget?.traceId ? 'this trace' : 'these prod traces'} as a Look for{' '}
+              {attachTarget?.traceId ? 'this trace' : 'these prod traces'} as an eval case for{' '}
               <span className="font-mono">{attachTarget?.component}</span>. Adding a trace to each
               component of the agent group is how a component-level eval is authored.
             </DialogDescription>

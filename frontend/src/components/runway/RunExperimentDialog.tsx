@@ -18,22 +18,22 @@ import { Input } from '@/components/ui/input';
  * plain-English placeholders (never fabricated values) for the rest. */
 export function buildAgentPrompt(lookbook: string, baseline: string): string {
   if (lookbook && baseline) {
-    return `Run the configured evaluation harness for the ${lookbook} Lookbook, comparing baseline ${baseline} against a new candidate build, and export the result to Chorus.`;
+    return `Run the configured evaluation harness for the ${lookbook} eval suite, comparing baseline ${baseline} against a new candidate build, and export the result to Chorus.`;
   }
   if (lookbook) {
-    return `Run the configured evaluation harness for the ${lookbook} Lookbook, comparing its current baseline against a new candidate build, and export the result to Chorus.`;
+    return `Run the configured evaluation harness for the ${lookbook} eval suite, comparing its current baseline against a new candidate build, and export the result to Chorus.`;
   }
   if (baseline) {
-    return `Run the configured evaluation harness for the Lookbook you want to evaluate, comparing baseline ${baseline} against a new candidate build, and export the result to Chorus.`;
+    return `Run the configured evaluation harness for the eval suite you want to evaluate, comparing baseline ${baseline} against a new candidate build, and export the result to Chorus.`;
   }
-  return 'Run the configured evaluation harness for the Lookbook and baseline you want to evaluate, compare it with a new candidate build, and export the result to Chorus.';
+  return 'Run the configured evaluation harness for the eval suite and baseline you want to evaluate, compare it with a new candidate build, and export the result to Chorus.';
 }
 
 /** Build an explicit placeholder command without inventing an evaluator CLI. */
 export function buildCliCommand(lookbook: string, baseline: string): string {
-  const lb = lookbook || '<lookbook>';
+  const lb = lookbook || '<eval-suite>';
   const bl = baseline || '<baseline>';
-  return `<your-eval-command> --lookbook ${lb} --baseline ${bl}`;
+  return `<your-eval-command> --eval-suite ${lb} --baseline ${bl}`;
 }
 
 /** A block of copyable text with its own copy-to-clipboard button — mirrors
@@ -121,7 +121,7 @@ export function RunExperimentDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-xl">
         <DialogHeader>
-          <DialogTitle>Run experiment...</DialogTitle>
+          <DialogTitle>Run eval…</DialogTitle>
           <DialogDescription>
             Chorus accepts evaluation results without requiring a particular framework. Use your
             application's configured harness, then export the run to Chorus.
@@ -130,13 +130,13 @@ export function RunExperimentDialog({
 
         {lookbook ? null : (
           <label className="block text-xs">
-            <span className="mb-1 block font-semibold text-muted-foreground">Lookbook name</span>
+            <span className="mb-1 block font-semibold text-muted-foreground">Eval suite name</span>
             <Input
-              aria-label="Lookbook name"
+              aria-label="Eval suite name"
               data-testid="run-experiment-lookbook-input"
               value={lookbookInput}
               onChange={event => setLookbookInput(event.target.value)}
-              placeholder="e.g. planning-lookbook"
+              placeholder="e.g. flex-regression"
             />
           </label>
         )}

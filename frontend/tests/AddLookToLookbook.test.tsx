@@ -16,7 +16,7 @@ import { App } from '../src/App';
 import { ThemeProvider } from '../src/theme/theme-provider';
 import { server } from './__mocks__/node';
 
-function renderApp(initialPath = '/lookbooks') {
+function renderApp(initialPath = '/evals') {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
@@ -108,7 +108,7 @@ describe('Add Look — from the Lookbooks page', () => {
     // No "new vs existing" target picker anywhere in this dialog — the
     // target dataset (planning-lookbook) is already known.
     expect(within(dialog).queryByTestId('add-to-lookbook-target-select')).not.toBeInTheDocument();
-    expect(within(dialog).queryByText(/New Lookbook/)).not.toBeInTheDocument();
+    expect(within(dialog).queryByText(/New eval suite/)).not.toBeInTheDocument();
     expect(within(dialog).getAllByText(/planning-lookbook/).length).toBeGreaterThan(0);
 
     expect(await within(dialog).findByText('First run input')).toBeInTheDocument();

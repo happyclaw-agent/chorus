@@ -16,10 +16,12 @@ import { shortTraceId } from '@/lib/format';
  */
 export function TraceMetaEditor({
   traceId,
+  rootSpanId,
   displayName,
   notes,
 }: {
   traceId: string;
+  rootSpanId?: string;
   displayName: string | null;
   notes: string | null;
 }) {
@@ -36,7 +38,7 @@ export function TraceMetaEditor({
   useEffect(() => {
     setName(displayName ?? '');
     setNote(notes ?? '');
-  }, [traceId, displayName, notes]);
+  }, [traceId, rootSpanId, displayName, notes]);
 
   // Reset save/error state only on an actual trace switch. A successful save
   // invalidates the `['trace', traceId]` query, whose refetch re-runs the
@@ -50,7 +52,7 @@ export function TraceMetaEditor({
     return () => {
       if (savedTimer.current) clearTimeout(savedTimer.current);
     };
-  }, [traceId]);
+  }, [traceId, rootSpanId]);
 
   const dirty = name !== (displayName ?? '') || note !== (notes ?? '');
 
@@ -59,7 +61,7 @@ export function TraceMetaEditor({
     setSaved(false);
     if (savedTimer.current) clearTimeout(savedTimer.current);
     save.mutate(
-      { traceId, name, notes: note },
+      { traceId, rootSpanId, name, notes: note },
       {
         onSuccess: () => {
           setSaved(true);

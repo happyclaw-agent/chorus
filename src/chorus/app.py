@@ -875,8 +875,14 @@ def create_app(
     if assets.is_dir():
         app.mount("/assets", StaticFiles(directory=assets), name="chorus-assets")
 
+    @app.get("/chorus-mark.svg", include_in_schema=False)
+    def chorus_mark() -> FileResponse:
+        return FileResponse(STATIC_DIR / "chorus-mark.svg", media_type="image/svg+xml")
+
     @app.get("/{full_path:path}", include_in_schema=False)
     def spa_fallback(full_path: str) -> FileResponse:
+        if full_path.startswith("api/") or Path(full_path).suffix:
+            raise HTTPException(status_code=404, detail="not found")
         return FileResponse(STATIC_INDEX)
 
     return app

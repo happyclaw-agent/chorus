@@ -5,7 +5,7 @@ import { useQueryClient } from '@tanstack/react-query';
 
 import { api, ApiError } from '@/api/client';
 import { useRuns } from '@/api/hooks';
-import type { RunStatus } from '@/api/types';
+import type { Run, RunStatus } from '@/api/types';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -81,19 +81,21 @@ export function AddLookDialog({
     );
   }, [runsQuery.data, search]);
 
-  const allSelected = rows.length > 0 && rows.every(run => selected.has(run.trace_id));
+  const runKey = (run: Run) => `${run.trace_id}:${run.root_span_id ?? ''}`;
+  const allSelected = rows.length > 0 && rows.every(run => selected.has(runKey(run)));
 
-  function toggleRow(traceId: string) {
+  function toggleRow(run: Run) {
+    const key = runKey(run);
     setSelected(previous => {
       const next = new Set(previous);
-      if (next.has(traceId)) next.delete(traceId);
-      else next.add(traceId);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
       return next;
     });
   }
 
   function toggleAll() {
-    setSelected(allSelected ? new Set() : new Set(rows.map(run => run.trace_id)));
+    setSelected(allSelected ? new Set() : new Set(rows.map(runKey)));
   }
 
   async function handleSave() {
@@ -101,12 +103,17 @@ export function AddLookDialog({
     setSubmitting(true);
     setError(null);
 
-    const traceIds = Array.from(selected);
+    const selectedRuns = rows.filter(run => selected.has(runKey(run)));
     // One promote request per trace (no bulk endpoint), same batching as
     // AddToLookbookDialog: invalidate once after the whole batch settles
     // rather than once per trace.
     const outcomes = await Promise.allSettled(
-      traceIds.map(traceId => api.promoteTrace(traceId, { dataset: datasetName }))
+      selectedRuns.map(run =>
+        api.promoteTrace(run.trace_id, {
+          dataset: datasetName,
+          root_span_id: run.root_span_id ?? undefined,
+        })
+      )
     );
     setSubmitting(false);
 
@@ -114,19 +121,21 @@ export function AddLookDialog({
     void queryClient.invalidateQueries({ queryKey: ['runs'] });
     void queryClient.invalidateQueries({ queryKey: ['experiments'] });
     void queryClient.invalidateQueries({ queryKey: ['experiment-gate'] });
-    for (const traceId of traceIds) {
-      void queryClient.invalidateQueries({ queryKey: ['trace', traceId] });
+    for (const run of selectedRuns) {
+      void queryClient.invalidateQueries({ queryKey: ['trace', run.trace_id] });
     }
 
     const failures = outcomes.filter((o): o is PromiseRejectedResult => o.status === 'rejected');
     if (failures.length > 0) {
       const first = failures[0].reason;
       const message = first instanceof ApiError ? first.message : (first as Error).message;
-      setError(`${failures.length} of ${traceIds.length} trace(s) failed to promote: ${message}`);
+      setError(
+        `${failures.length} of ${selectedRuns.length} trace(s) failed to promote: ${message}`
+      );
       return;
     }
 
-    setResult({ count: traceIds.length });
+    setResult({ count: selectedRuns.length });
     onPromoted?.();
   }
 
@@ -138,10 +147,10 @@ export function AddLookDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-2xl">
         <DialogHeader>
-          <DialogTitle>Add Look to {datasetName}</DialogTitle>
+          <DialogTitle>Add eval case to {datasetName}</DialogTitle>
           <DialogDescription>
             {result
-              ? `${result.count} ${result.count === 1 ? 'Look' : 'Looks'} added to ${datasetName}, each with lineage back to the run that created it.`
+              ? `${result.count} ${result.count === 1 ? 'eval case' : 'eval cases'} added to ${datasetName}, each with lineage back to the run that created it.`
               : `Search and pick one or more traces to promote directly into ${datasetName}.`}
           </DialogDescription>
         </DialogHeader>
@@ -153,7 +162,7 @@ export function AddLookDialog({
               className="rounded-md border border-success/50 bg-success/10 px-3 py-2.5 text-xs"
             >
               <div className="font-semibold text-success">
-                Promoted {result.count} {result.count === 1 ? 'Look' : 'Looks'} into{' '}
+                Promoted {result.count} {result.count === 1 ? 'eval case' : 'eval cases'} into{' '}
                 <span className="font-mono">{datasetName}</span>
               </div>
             </div>
@@ -215,17 +224,17 @@ export function AddLookDialog({
                   <tbody>
                     {rows.map(run => (
                       <tr
-                        key={run.trace_id}
+                        key={runKey(run)}
                         className="cursor-pointer border-b border-border last:border-b-0 hover:bg-muted/30"
-                        onClick={() => toggleRow(run.trace_id)}
+                        onClick={() => toggleRow(run)}
                       >
                         <td className="px-2 py-1.5" onClick={event => event.stopPropagation()}>
                           <input
                             type="checkbox"
                             aria-label={`Select trace ${run.trace_id}`}
-                            checked={selected.has(run.trace_id)}
-                            onChange={() => toggleRow(run.trace_id)}
-                            data-testid={`add-look-select-${run.trace_id}`}
+                            checked={selected.has(runKey(run))}
+                            onChange={() => toggleRow(run)}
+                            data-testid={`add-look-select-${run.trace_id}${run.root_span_id ? `-${run.root_span_id}` : ''}`}
                           />
                         </td>
                         <td className="px-2 py-1.5 font-mono text-secondary-foreground">
@@ -267,7 +276,7 @@ export function AddLookDialog({
                 <Plus className="size-3.5" />
                 {submitting
                   ? 'Adding…'
-                  : `Add ${selected.size} ${selected.size === 1 ? 'Look' : 'Looks'}`}
+                  : `Add ${selected.size} ${selected.size === 1 ? 'eval case' : 'eval cases'}`}
               </Button>
             </DialogFooter>
           </div>

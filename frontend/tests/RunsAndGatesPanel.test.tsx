@@ -15,7 +15,7 @@ import { App } from '../src/App';
 import { ThemeProvider } from '../src/theme/theme-provider';
 import { server } from './__mocks__/node';
 
-function renderApp(initialPath = '/lookbooks') {
+function renderApp(initialPath = '/evals') {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });

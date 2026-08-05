@@ -16,7 +16,7 @@ import { App } from '../src/App';
 import { ThemeProvider } from '../src/theme/theme-provider';
 import { server } from './__mocks__/node';
 
-function renderApp(initialPath = '/lookbooks') {
+function renderApp(initialPath = '/evals') {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
@@ -167,7 +167,7 @@ describe('Lookbooks in-place status filter', () => {
     expect(screen.getByText('A1 passing input')).toBeInTheDocument();
 
     // Still on Lookbooks — didn't navigate to Traces.
-    expect(screen.getByRole('heading', { name: 'Lookbooks' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Evals' })).toBeInTheDocument();
     expect(screen.getByTestId('lookbook-pass-count-dataset-a')).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'Traces' })).not.toBeInTheDocument();
   });
@@ -278,7 +278,7 @@ describe('Lookbooks in-place status filter', () => {
     expect(await screen.findByText('P1 input')).toBeInTheDocument();
     fireEvent.click(screen.getByTestId('lookbook-fail-count-all-passing'));
 
-    expect(await screen.findByText(/No failing Looks/i)).toBeInTheDocument();
+    expect(await screen.findByText(/No failing cases/i)).toBeInTheDocument();
     expect(screen.queryByText('P1 input')).not.toBeInTheDocument();
   });
 });

@@ -32,7 +32,7 @@ interface PromoteOption {
 const OPTIONS: PromoteOption[] = [
   {
     target: 'ci-lookbook',
-    label: 'Add to CI suite (→ Look)',
+    label: 'Add to eval suite',
     icon: BookOpen,
   },
   {
@@ -49,9 +49,11 @@ const OPTIONS: PromoteOption[] = [
  */
 export function PromoteMenu({
   traceId,
+  rootSpanId,
   onPromote,
 }: {
   traceId: string;
+  rootSpanId?: string;
   onPromote?: PromoteHandler;
 }) {
   const [open, setOpen] = useState(false);
@@ -83,7 +85,7 @@ export function PromoteMenu({
       return;
     }
     if (option.target === 'open-traces') {
-      navigate(traceDetailPath(traceId));
+      navigate(traceDetailPath(traceId, rootSpanId));
       return;
     }
     // "Add to CI suite (→ Look)" is now real: promote the trace into a Look.
@@ -123,7 +125,12 @@ export function PromoteMenu({
         </div>
       ) : null}
 
-      <PromoteToLookDialog traceId={traceId} open={promoteOpen} onOpenChange={setPromoteOpen} />
+      <PromoteToLookDialog
+        traceId={traceId}
+        rootSpanId={rootSpanId}
+        open={promoteOpen}
+        onOpenChange={setPromoteOpen}
+      />
     </div>
   );
 }

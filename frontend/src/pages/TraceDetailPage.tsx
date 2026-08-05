@@ -1,6 +1,6 @@
 import { ArrowLeft } from 'lucide-react';
 import { useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useParams, useSearchParams } from 'react-router-dom';
 
 import { useTrace, useTraceGraph } from '@/api/hooks';
 import { ApiError } from '@/api/client';
@@ -99,8 +99,14 @@ function ScoresPanel({ scores }: { scores: Score[] }) {
   );
 }
 
-function SystemLineagePanel({ traceId }: { traceId: string }) {
-  const graphQuery = useTraceGraph(traceId);
+function SystemLineagePanel({
+  traceId,
+  rootSpanId,
+}: {
+  traceId: string;
+  rootSpanId: string | null;
+}) {
+  const graphQuery = useTraceGraph(traceId, rootSpanId ?? undefined);
   const [selected, setSelected] = useState<string | null>(null);
 
   if (graphQuery.isLoading) {
@@ -132,7 +138,9 @@ function SystemLineagePanel({ traceId }: { traceId: string }) {
 
 export function TraceDetailPage() {
   const { traceId } = useParams<{ traceId: string }>();
-  const traceQuery = useTrace(traceId);
+  const [searchParams] = useSearchParams();
+  const rootSpanId = searchParams.get('root_span_id') ?? undefined;
+  const traceQuery = useTrace(traceId, rootSpanId);
 
   if (traceQuery.isLoading) {
     return (
@@ -188,7 +196,9 @@ export function TraceDetailPage() {
         eyebrow="Trace Detail"
         title={run.display_name?.trim() ? run.display_name : `Trace ${shortTraceId(run.trace_id)}`}
         description={run.input ? truncate(run.input, 180) : undefined}
-        actions={<PromoteToLookButton traceId={run.trace_id} />}
+        actions={
+          <PromoteToLookButton traceId={run.trace_id} rootSpanId={run.root_span_id ?? undefined} />
+        }
       />
 
       <div className="mb-4 flex flex-wrap items-center gap-x-8 gap-y-3 rounded-lg border border-border bg-card px-4 py-3">
@@ -213,6 +223,7 @@ export function TraceDetailPage() {
         <Panel title="Name & notes">
           <TraceMetaEditor
             traceId={run.trace_id}
+            rootSpanId={run.root_span_id ?? undefined}
             displayName={run.display_name}
             notes={run.notes}
           />
@@ -230,7 +241,7 @@ export function TraceDetailPage() {
           </div>
         </Panel>
 
-        <SystemLineagePanel traceId={run.trace_id} />
+        <SystemLineagePanel traceId={run.trace_id} rootSpanId={run.root_span_id} />
 
         {logs && logs.length > 0 ? (
           <Panel title={`Logs · ${logs.length}`}>

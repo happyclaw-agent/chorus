@@ -19,20 +19,22 @@ import { PATHS } from '@/constants/path';
 import { shortTraceId } from '@/lib/format';
 
 /**
- * Controlled dialog that promotes a trace to a Look. Confirms/edits the target
- * dataset (and optionally the expected output), calls the real promote endpoint,
- * and on success shows an inline confirmation with a link to Lookbooks.
+ * Controlled dialog that promotes a trace to an eval case. Confirms/edits the
+ * target suite and optional expected output, calls the real promote endpoint,
+ * and links to Evals after success.
  */
 export function PromoteToLookDialog({
   traceId,
+  rootSpanId,
   open,
   onOpenChange,
-  defaultDataset = 'promoted-looks',
+  defaultDataset = 'promoted-evals',
 }: {
   traceId: string;
+  rootSpanId?: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  /** Target dataset pre-filled in the form (default "promoted-looks"). */
+  /** Target suite pre-filled in the form (default "promoted-evals"). */
   defaultDataset?: string;
 }) {
   const promote = usePromoteTrace();
@@ -56,6 +58,7 @@ export function PromoteToLookDialog({
     promote.mutate(
       {
         traceId,
+        root_span_id: rootSpanId,
         dataset: dataset.trim() || defaultDataset,
         expected: expected.trim() ? expected : undefined,
       },
@@ -77,11 +80,11 @@ export function PromoteToLookDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Promote to Look</DialogTitle>
+          <DialogTitle>Promote to eval case</DialogTitle>
           <DialogDescription>
             {result
-              ? 'This trace is now a versioned Look, with lineage back to the run that created it.'
-              : 'Turn this trace into a versioned Look (an eval example) in a Lookbook. Its expected output defaults to the trace output — edit it to pin a different ground truth.'}
+              ? 'This trace is now a reusable eval case, with lineage back to the run that created it.'
+              : 'Turn this trace into an eval case in a suite. Its expected output defaults to the trace output — edit it to pin a different ground truth.'}
           </DialogDescription>
         </DialogHeader>
 
@@ -89,7 +92,7 @@ export function PromoteToLookDialog({
           <div className="space-y-3">
             <div className="rounded-md border border-success/50 bg-success/10 px-3 py-2.5 text-xs">
               <div className="font-semibold text-success">
-                Promoted to Look <span className="font-mono">{result.example_id}</span> in{' '}
+                Promoted eval case <span className="font-mono">{result.example_id}</span> into{' '}
                 <span className="font-mono">{result.dataset}</span>
               </div>
               <div className="mt-1 text-muted-foreground">
@@ -102,8 +105,8 @@ export function PromoteToLookDialog({
                 Close
               </Button>
               <Button size="sm" asChild>
-                <Link to={PATHS.LOOKBOOKS}>
-                  View in Lookbooks
+                <Link to={PATHS.EVALS}>
+                  View in Evals
                   <ArrowUpRight className="size-3.5" />
                 </Link>
               </Button>
@@ -113,12 +116,12 @@ export function PromoteToLookDialog({
           <div className="space-y-3">
             <label className="block space-y-1">
               <span className="text-[10px] font-semibold tracking-wider text-muted-foreground uppercase">
-                Dataset (Lookbook)
+                Eval suite
               </span>
               <Input
                 value={dataset}
                 onChange={event => setDataset(event.target.value)}
-                placeholder="promoted-looks"
+                placeholder="promoted-evals"
                 disabled={promote.isPending}
               />
             </label>
@@ -146,7 +149,7 @@ export function PromoteToLookDialog({
               </Button>
               <Button size="sm" onClick={handlePromote} disabled={promote.isPending}>
                 <Sparkles className="size-3.5" />
-                {promote.isPending ? 'Promoting…' : 'Promote to Look'}
+                {promote.isPending ? 'Promoting…' : 'Promote to eval case'}
               </Button>
             </DialogFooter>
           </div>
@@ -157,14 +160,16 @@ export function PromoteToLookDialog({
 }
 
 /**
- * Self-contained "Promote to Look" button + dialog for a trace. Used on the
+ * Self-contained "Promote to eval" button + dialog for a trace. Used on the
  * trace detail page; other surfaces drive {@link PromoteToLookDialog} directly.
  */
 export function PromoteToLookButton({
   traceId,
+  rootSpanId,
   defaultDataset,
 }: {
   traceId: string;
+  rootSpanId?: string;
   defaultDataset?: string;
 }) {
   const [open, setOpen] = useState(false);
@@ -172,10 +177,11 @@ export function PromoteToLookButton({
     <>
       <Button size="sm" onClick={() => setOpen(true)}>
         <Sparkles className="size-3.5" />
-        Promote to Look
+        Promote to eval case
       </Button>
       <PromoteToLookDialog
         traceId={traceId}
+        rootSpanId={rootSpanId}
         open={open}
         onOpenChange={setOpen}
         defaultDataset={defaultDataset}

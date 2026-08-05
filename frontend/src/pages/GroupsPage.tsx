@@ -134,7 +134,7 @@ export function GroupsPage() {
       <PageHeader
         eyebrow="Quality Layer"
         title="Agent Groups"
-        description="The organizing layer above your agent-quality tools. Each group is a body of work that flows through dev → integration → prod. Drop into Traces, Lookbooks, Runway, or Monitor once you're inside one."
+        description="The organizing layer above your agent-quality tools. Each group is a body of work that flows through dev → integration → prod. Drop into Traces, Evals, Runs, or Monitor once you're inside one."
       />
 
       {groupsQuery.isLoading ? (

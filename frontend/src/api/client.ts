@@ -7,6 +7,8 @@ import type {
   CorpusInfo,
   Dataset,
   Experiment,
+  EvalRun,
+  EvaluationOverview,
   ExperimentFilters,
   ExperimentGrid,
   ExperimentMatrix,
@@ -27,7 +29,7 @@ import type {
   RemoveCorpusResult,
   Run,
   RunFilters,
-  RunwayStatus,
+  ChorusStatus,
   Stats,
   TraceComponentGraph,
   TraceDetail,
@@ -45,6 +47,23 @@ export class ApiError extends Error {
 }
 
 type QueryParams = Record<string, string | number | undefined>;
+let tokenPrompt: Promise<string | null> | null = null;
+
+async function promptForApiToken(): Promise<string | null> {
+  if (!tokenPrompt) {
+    tokenPrompt = Promise.resolve().then(() => {
+      const value = window.prompt('Enter the Chorus API token for this session:')?.trim() ?? '';
+      if (!value) return null;
+      window.sessionStorage.setItem('chorus.apiToken', value);
+      return value;
+    });
+  }
+  try {
+    return await tokenPrompt;
+  } finally {
+    tokenPrompt = null;
+  }
+}
 
 /**
  * Small typed fetch wrapper. All URLs are built off `getApiUrl()`, which
@@ -68,17 +87,30 @@ async function request<T>(
   }
 
   const hasBody = options.body !== undefined;
-  const token = window.sessionStorage.getItem('chorus.apiToken');
-  const response = await fetch(url, {
-    method: options.method ?? 'GET',
-    headers: {
-      Accept: 'application/json',
-      ...(hasBody ? { 'Content-Type': 'application/json' } : {}),
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    body: hasBody ? JSON.stringify(options.body) : undefined,
-    credentials: 'same-origin',
-  });
+  const fetchWithToken = (token: string | null) =>
+    fetch(url, {
+      method: options.method ?? 'GET',
+      headers: {
+        Accept: 'application/json',
+        ...(hasBody ? { 'Content-Type': 'application/json' } : {}),
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: hasBody ? JSON.stringify(options.body) : undefined,
+      credentials: 'same-origin',
+    });
+
+  const existingToken = window.sessionStorage.getItem('chorus.apiToken');
+  let response = await fetchWithToken(existingToken);
+  if (response.status === 401) {
+    const newerToken = window.sessionStorage.getItem('chorus.apiToken');
+    if (newerToken && newerToken !== existingToken) {
+      response = await fetchWithToken(newerToken);
+    } else {
+      window.sessionStorage.removeItem('chorus.apiToken');
+      const enteredToken = await promptForApiToken();
+      if (enteredToken) response = await fetchWithToken(enteredToken);
+    }
+  }
 
   if (!response.ok) {
     let detail = response.statusText;
@@ -127,22 +159,31 @@ export const api = {
     request<GroupDetail>(`/groups/${groupId}/agents/${encodeURIComponent(agentId)}`, {
       method: 'DELETE',
     }),
-  getTrace: (traceId: string) => request<TraceDetail>(`/ui/traces/${traceId}`),
-  getTraceLogs: (traceId: string) => request<LogRecord[]>(`/traces/${traceId}/logs`),
-  getTraceGraph: (traceId: string) => request<TraceComponentGraph>(`/traces/${traceId}/graph`),
+  getTrace: (traceId: string, rootSpanId?: string) =>
+    request<TraceDetail>(`/ui/traces/${traceId}`, { params: { root_span_id: rootSpanId } }),
+  getTraceLogs: (traceId: string, rootSpanId?: string) =>
+    request<LogRecord[]>(`/traces/${traceId}/logs`, { params: { root_span_id: rootSpanId } }),
+  getTraceGraph: (traceId: string, rootSpanId?: string) =>
+    request<TraceComponentGraph>(`/traces/${traceId}/graph`, {
+      params: { root_span_id: rootSpanId },
+    }),
   /**
    * PUT /api/traces/{id}/meta — persist a user-authored display name and/or
    * notes for a trace. Written into the inbox as a sidecar (no source-trace
    * mutation); omit a field to leave it unchanged, "" to clear it.
    */
-  setTraceMeta: (traceId: string, body: TraceMetaParams) =>
-    request<TraceMeta>(`/traces/${traceId}/meta`, { method: 'PUT', body }),
+  setTraceMeta: (traceId: string, rootSpanId: string | undefined, body: TraceMetaParams) =>
+    request<TraceMeta>(`/traces/${traceId}/meta`, {
+      method: 'PUT',
+      params: { root_span_id: rootSpanId },
+      body,
+    }),
   /**
-   * POST /api/traces/{id}/promote — turn a trace into a Look (Example) in a
-   * versioned dataset. Idempotent per (dataset, example_id).
+   * POST /api/traces/{id}/promote — turn a trace into an eval case in a
+   * versioned eval suite. Idempotent per (dataset, example_id).
    */
   promoteTrace: async (traceId: string, body: PromoteParams = {}) => {
-    const dataset = body.dataset ?? 'promoted-traces';
+    const dataset = body.dataset ?? 'promoted-evals';
     const result = await request<{
       case_id: string;
       input_text: string;
@@ -152,6 +193,7 @@ export const api = {
     }>(`/traces/${traceId}/promote`, {
       method: 'POST',
       body: {
+        root_span_id: body.root_span_id,
         expected_output: body.expected,
         attributes: { dataset, promoted_by: body.promoted_by ?? 'chorus' },
       },
@@ -171,6 +213,8 @@ export const api = {
    */
   getExperiments: (filters: ExperimentFilters = {}) =>
     request<Experiment[]>('/experiments', { params: { ...filters } }),
+  getEvalRuns: () => request<EvalRun[]>('/eval-runs'),
+  getEvaluationOverview: () => request<EvaluationOverview>('/evals'),
   getExperimentGrid: (experimentId: string) =>
     request<ExperimentGrid>(`/experiments/${experimentId}/grid`),
   getExperimentMatrix: (experimentId: string, params: MatrixParams = {}) =>
@@ -221,7 +265,7 @@ export const api = {
   refresh: () => request<{ runs: number }>('/refresh', { method: 'POST' }),
 
   /** GET /api/status — corpora, live run count, and the OTLP receiver path. */
-  getStatus: () => request<RunwayStatus>('/status'),
+  getStatus: () => request<ChorusStatus>('/status'),
   /** GET /api/corpora — the loaded trace corpora. */
   getCorpora: () => request<CorpusInfo[]>('/corpora'),
   /**

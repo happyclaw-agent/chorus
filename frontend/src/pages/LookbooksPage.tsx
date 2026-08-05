@@ -1,10 +1,25 @@
 import { useMemo, useState } from 'react';
 import type { KeyboardEvent, MouseEvent, ReactNode } from 'react';
-import { BookPlus, ChevronDown, ChevronRight, FlaskConical, Plus } from 'lucide-react';
+import {
+  BookPlus,
+  ChevronDown,
+  ChevronRight,
+  CircleCheck,
+  CircleX,
+  FlaskConical,
+  Plus,
+} from 'lucide-react';
 import { Link } from 'react-router-dom';
 
-import { useDatasets, useRuns } from '@/api/hooks';
-import type { Dataset, DatasetExample, Run } from '@/api/types';
+import { useDatasets, useEvaluationOverview, useEvalRuns, useRuns } from '@/api/hooks';
+import type {
+  Dataset,
+  DatasetExample,
+  EvalDefinition,
+  EvalMetric,
+  EvalRun,
+  Run,
+} from '@/api/types';
 import { PageHeader } from '@/components/layout/PageHeader';
 import { AddLookDialog } from '@/components/lookbooks/AddLookDialog';
 import { EditExpectedField } from '@/components/lookbooks/EditExpectedField';
@@ -138,7 +153,7 @@ function DatasetCard({
       </div>
       <div className="mt-2.5 flex gap-5 text-[11px] text-muted-foreground">
         <StatButton
-          label={`Show all ${dataset.example_count} Looks in ${dataset.name}`}
+          label={`Show all ${dataset.example_count} eval cases in ${dataset.name}`}
           testId={`lookbook-total-count-${dataset.name}`}
           active={active && statusFilter === 'all'}
           onClick={() => onSelectStatus('all')}
@@ -146,10 +161,10 @@ function DatasetCard({
           <b className="block font-mono text-base font-semibold text-foreground">
             {dataset.example_count}
           </b>
-          Looks
+          cases
         </StatButton>
         <StatButton
-          label={`${passing} passing Looks in ${dataset.name} — filter this Lookbook`}
+          label={`${passing} passing eval cases in ${dataset.name} — filter this suite`}
           testId={`lookbook-pass-count-${dataset.name}`}
           active={active && statusFilter === 'ok'}
           onClick={() => onSelectStatus('ok')}
@@ -158,7 +173,7 @@ function DatasetCard({
           passing
         </StatButton>
         <StatButton
-          label={`${failing} failing Looks in ${dataset.name} — filter this Lookbook`}
+          label={`${failing} failing eval cases in ${dataset.name} — filter this suite`}
           testId={`lookbook-fail-count-${dataset.name}`}
           active={active && statusFilter === 'error'}
           onClick={() => onSelectStatus('error')}
@@ -293,7 +308,137 @@ function ExampleRow({
   );
 }
 
-export function LookbooksPage() {
+function evalPassed(metric: EvalMetric): boolean {
+  if (typeof metric.success === 'boolean') return metric.success;
+  const total = Number(metric.total ?? 0);
+  return total > 0 && Number(metric.passed ?? 0) === total;
+}
+
+function evalScore(metric: EvalMetric): string {
+  const score = Number(metric.score);
+  if (!Number.isFinite(score)) return '—';
+  return score >= 0 && score <= 1 ? `${(score * 100).toFixed(1)}%` : score.toFixed(3);
+}
+
+function EvalCatalog({
+  definitions,
+  latestRun,
+}: {
+  definitions: EvalDefinition[];
+  latestRun: EvalRun | undefined;
+}) {
+  const rows = [...definitions].sort(
+    (left, right) =>
+      (left.group ?? '').localeCompare(right.group ?? '') || left.name.localeCompare(right.name)
+  );
+  const latestMetrics = latestRun?.metrics ?? {};
+  const exercised = rows.filter(definition => latestMetrics[definition.name]).length;
+  const attention = rows.filter(definition => {
+    const metric = latestMetrics[definition.name];
+    return metric ? !evalPassed(metric) : false;
+  }).length;
+
+  return (
+    <div className="mb-5 overflow-hidden rounded-lg border border-border bg-card">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
+        <div>
+          <h2 className="text-sm font-semibold">Registered evals</h2>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            {rows.length} evaluator definitions
+            {latestRun ? ` · ${exercised} exercised by the latest run` : ''}
+          </p>
+        </div>
+        <div className="flex items-center gap-3 text-xs">
+          {latestRun ? (
+            <>
+              <span className="font-mono text-success">{exercised - attention} passing</span>
+              <span
+                className={cn(
+                  'font-mono',
+                  attention ? 'text-destructive' : 'text-muted-foreground'
+                )}
+              >
+                {attention} need attention
+              </span>
+              <Button size="sm" variant="secondary" asChild>
+                <Link to={PATHS.RUNS}>View latest run</Link>
+              </Button>
+            </>
+          ) : null}
+        </div>
+      </div>
+      {rows.length === 0 ? (
+        <div className="px-4 py-6 text-sm text-muted-foreground">
+          No evaluator definitions are registered with this Chorus server.
+        </div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[700px] text-xs">
+            <thead>
+              <tr className="text-left text-[10px] font-semibold tracking-wider text-muted-foreground uppercase">
+                <th className="border-b border-border px-4 py-2.5">Eval</th>
+                <th className="border-b border-border px-3 py-2.5">Group</th>
+                <th className="border-b border-border px-3 py-2.5 text-right">Checks</th>
+                <th className="border-b border-border px-3 py-2.5 text-right">Score</th>
+                <th className="border-b border-border px-3 py-2.5">Latest result</th>
+                <th className="border-b border-border px-4 py-2.5">Runner</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map(definition => {
+                const metric = latestMetrics[definition.name];
+                const passed = metric ? evalPassed(metric) : false;
+                return (
+                  <tr
+                    key={definition.name}
+                    className="border-b border-border last:border-b-0 hover:bg-muted/30"
+                  >
+                    <td className="px-4 py-2.5 font-medium">{definition.name}</td>
+                    <td className="px-3 py-2.5 text-muted-foreground">
+                      {(definition.group ?? '—').replaceAll('_', ' ')}
+                    </td>
+                    <td className="px-3 py-2.5 text-right font-mono">
+                      {metric ? `${Number(metric.passed ?? 0)}/${Number(metric.total ?? 0)}` : '—'}
+                    </td>
+                    <td className="px-3 py-2.5 text-right font-mono">
+                      {metric ? evalScore(metric) : '—'}
+                    </td>
+                    <td className="px-3 py-2.5">
+                      {metric ? (
+                        <span
+                          className={cn(
+                            'inline-flex items-center gap-1.5 font-medium',
+                            passed ? 'text-success' : 'text-destructive'
+                          )}
+                        >
+                          {passed ? (
+                            <CircleCheck className="size-3.5" />
+                          ) : (
+                            <CircleX className="size-3.5" />
+                          )}
+                          {passed ? 'Passed' : 'Failed'}
+                        </span>
+                      ) : (
+                        <span className="text-muted-foreground">Not in latest run</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-2.5 font-mono text-[11px] text-muted-foreground">
+                      {definition.runner ?? definition.source ?? '—'}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function EvalsPage() {
+  const evaluationQuery = useEvaluationOverview();
+  const evalRunsQuery = useEvalRuns();
   const datasetsQuery = useDatasets();
   const runsQuery = useRuns({ limit: 500 });
   const [selectedName, setSelectedName] = useState<string>('');
@@ -302,6 +447,8 @@ export function LookbooksPage() {
   const [runExperimentOpen, setRunExperimentOpen] = useState(false);
 
   const datasets = datasetsQuery.data ?? [];
+  const definitions = evaluationQuery.data?.catalog ?? [];
+  const latestEvalRun = evalRunsQuery.data?.[0];
   const selected = datasets.find(dataset => dataset.name === selectedName) ?? datasets[0] ?? null;
 
   const verdicts = useMemo(() => latestRunsByExample(runsQuery.data ?? []), [runsQuery.data]);
@@ -335,20 +482,37 @@ export function LookbooksPage() {
     <section>
       <PageHeader
         eyebrow="Eval Suites"
-        title="Lookbooks"
-        description="Versioned eval suites, stored as datasets in the corpus. Every Look traces its lineage back to the run that created it."
+        title="Evals"
+        description="Registered evaluator definitions, their latest results, and reusable case suites with lineage back to the traces that created them."
         actions={
-          // Lookbooks are built from Traces (select/filter runs, then "Add to
-          // Lookbook") — that's the primary entry point, so this deep-links
+          // Eval suites are built from Traces (select/filter runs, then "Add to
+          // eval") — that's the primary entry point, so this deep-links
           // there instead of duplicating the flow on an empty page.
           <Button size="sm" asChild data-testid="lookbooks-new-button">
             <Link to={PATHS.TRACES}>
               <BookPlus className="size-3.5" />
-              New Lookbook
+              New eval suite
             </Link>
           </Button>
         }
       />
+
+      {evaluationQuery.isLoading || evalRunsQuery.isLoading ? (
+        <Skeleton className="mb-5 h-64 w-full" />
+      ) : evaluationQuery.isError ? (
+        <div className="mb-5 rounded-lg border border-border bg-card p-6 text-sm text-destructive">
+          Failed to load registered evals: {(evaluationQuery.error as Error).message}
+        </div>
+      ) : (
+        <EvalCatalog definitions={definitions} latestRun={latestEvalRun} />
+      )}
+
+      <div className="mb-3">
+        <h2 className="text-sm font-semibold">Reusable case suites</h2>
+        <p className="mt-0.5 text-xs text-muted-foreground">
+          Golden or production-derived inputs and expected outputs used for repeatable evaluations.
+        </p>
+      </div>
 
       {datasetsQuery.isLoading ? (
         <div className="space-y-2">
@@ -361,7 +525,8 @@ export function LookbooksPage() {
         </div>
       ) : datasets.length === 0 ? (
         <div className="rounded-lg border border-border bg-card p-6 text-sm text-muted-foreground">
-          No Lookbooks yet. Promote a trace to create the first reusable evaluation case.
+          No reusable case suites have been imported yet. The registered evals above can still run;
+          promote a trace or export golden cases to enable case-level drilldown.
         </div>
       ) : (
         <>
@@ -383,7 +548,7 @@ export function LookbooksPage() {
               <div className="flex items-center justify-between border-b border-border px-4 py-2.5">
                 <span className="text-[11px] font-semibold tracking-wider text-muted-foreground uppercase">
                   {selected.name} — {selected.example_count}{' '}
-                  {selected.example_count === 1 ? 'Look' : 'Looks'}
+                  {selected.example_count === 1 ? 'eval case' : 'eval cases'}
                 </span>
                 <div className="flex items-center gap-1.5">
                   <Button
@@ -393,21 +558,23 @@ export function LookbooksPage() {
                     onClick={() => setAddLookOpen(true)}
                   >
                     <Plus className="size-3.5" />
-                    Add Look…
+                    Add case…
                   </Button>
                   <RenameDatasetButton datasetName={selected.name} onRenamed={setSelectedName} />
                 </div>
               </div>
               {displayedExamples.length === 0 && statusFilter !== 'all' ? (
                 <div className="px-4 py-6 text-sm text-muted-foreground">
-                  No {statusFilter === 'ok' ? 'passing' : 'failing'} Looks in this Lookbook.
+                  No {statusFilter === 'ok' ? 'passing' : 'failing'} cases in this eval suite.
                 </div>
               ) : (
                 <div className="overflow-x-auto">
                   <table className="w-full min-w-[640px] text-xs">
                     <thead>
                       <tr className="text-left text-[10px] font-semibold tracking-wider text-muted-foreground uppercase">
-                        <th className="border-b border-border px-3 py-2 font-semibold">Look</th>
+                        <th className="border-b border-border px-3 py-2 font-semibold">
+                          Eval case
+                        </th>
                         <th className="border-b border-border px-3 py-2 font-semibold">
                           Source lineage
                         </th>
@@ -444,7 +611,7 @@ export function LookbooksPage() {
               <div className="mt-4 flex items-center justify-end">
                 <Button size="sm" variant="secondary" onClick={() => setRunExperimentOpen(true)}>
                   <FlaskConical className="size-3.5" />
-                  Run experiment...
+                  Run eval…
                 </Button>
               </div>
               <RunsAndGatesPanel datasetName={selected.name} />

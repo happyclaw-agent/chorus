@@ -7,6 +7,7 @@ export type RunMode = 'dev' | 'ci' | 'prod';
 
 export interface Run {
   trace_id: string;
+  root_span_id: string | null;
   corpus: string;
   agent_id: string;
   agent_version: string | null;
@@ -160,6 +161,51 @@ export interface Experiment {
   candidate: string | null;
   trace_ids: string[];
   run_count: number;
+}
+
+export interface EvalMetric {
+  group?: string;
+  passed?: number;
+  total?: number;
+  score?: number;
+  success?: boolean;
+  [key: string]: unknown;
+}
+
+/** One completed evaluation harness execution and its aggregate results. */
+export interface EvalRun {
+  experiment_id: string;
+  name: string | null;
+  description: string | null;
+  kind: 'aggregate';
+  created_at: string | null;
+  source: string;
+  model: string;
+  evaluator: string;
+  evaluated_models: string[];
+  passed: number;
+  failed: number;
+  total: number;
+  metrics: Record<string, EvalMetric>;
+  trace_ids: string[];
+  run_count: number;
+}
+
+/** One application-supplied evaluator definition registered with Chorus. */
+export interface EvalDefinition {
+  schema_version?: number;
+  name: string;
+  group?: string;
+  source?: string;
+  runner?: string;
+  [key: string]: unknown;
+}
+
+/** Generic evaluation state exposed by GET /api/evals. */
+export interface EvaluationOverview {
+  catalog: EvalDefinition[];
+  cases: Record<string, unknown>[];
+  runs: Record<string, unknown>[];
 }
 
 export interface AgentStats {
@@ -335,9 +381,9 @@ export interface MatrixParams {
 }
 
 /**
- * POST /api/traces/{id}/promote — a trace turned into a Look (an Example) in a
- * versioned dataset. Returned by `promoteTrace`. The Look then shows up in the
- * Lookbooks view (GET /api/datasets).
+ * POST /api/traces/{id}/promote — a trace turned into an eval case in a
+ * versioned eval suite. Returned by `promoteTrace`; the case then appears in
+ * the Evals view (GET /api/datasets).
  */
 export interface PromoteResult {
   example_id: string;
@@ -354,6 +400,7 @@ export interface PromoteResult {
  */
 export interface TraceMeta {
   trace_id: string;
+  root_span_id: string | null;
   name: string | null;
   notes: string | null;
 }
@@ -368,9 +415,9 @@ export interface TraceMetaParams {
 }
 
 /**
- * PUT /api/datasets/{name} — a Lookbook dataset renamed in place. The
+ * PUT /api/datasets/{name} — an eval suite renamed in place. The
  * examples file is rewritten under the new name in the writable inbox;
- * every Look keeps its example_id and metadata, only the dataset name (and
+ * every eval case keeps its example_id and metadata, only the dataset name (and
  * each Example's `dataset` field) changes.
  */
 export interface RenameDatasetResult {
@@ -378,7 +425,7 @@ export interface RenameDatasetResult {
   example_count: number;
 }
 
-/** Body for editing a Look's expected value (its metadata is untouched). */
+/** Body for editing an eval case's expected value (its metadata is untouched). */
 export interface UpdateLookParams {
   expected?: string;
 }
@@ -391,12 +438,14 @@ export interface RemoveLookResult {
 
 /** Body for a promote request (all optional; the server fills defaults). */
 export interface PromoteParams {
-  /** Target dataset the Look lands in (default "promoted-looks"). */
+  /** Target eval suite (default "promoted-evals"). */
   dataset?: string;
   /** Optional expected output; defaults to the trace's own output. */
   expected?: string;
-  /** Attribution recorded on the Look (default "runway"). */
+  /** Attribution recorded on the eval case (default "chorus"). */
   promoted_by?: string;
+  /** Selects one root when an OTLP trace contains multiple root spans. */
+  root_span_id?: string;
 }
 
 export interface RunFilters {
@@ -426,7 +475,7 @@ export interface CorpusInfo {
 }
 
 /** GET /api/status — corpora + live-run count + the OTLP receiver path. */
-export interface RunwayStatus {
+export interface ChorusStatus {
   run_count: number;
   /** Relative OTLP/HTTP receiver path, e.g. "/v1/traces". */
   otlp_endpoint: string;

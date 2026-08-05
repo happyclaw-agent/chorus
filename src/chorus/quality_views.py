@@ -1,4 +1,4 @@
-"""Provider-neutral projections used by the original Runway user interface."""
+"""Provider-neutral projections used by the Chorus quality interface."""
 
 from __future__ import annotations
 
@@ -95,7 +95,7 @@ def _first(attributes: Mapping[str, Any], *keys: str) -> Any:
 
 
 def _trace_content(
-    records: Sequence[dict[str, Any]], trace_id: str
+    records: Sequence[dict[str, Any]], trace_id: str, root_span_id: str | None
 ) -> tuple[str | None, str | None]:
     input_text: str | None = None
     output_text: str | None = None
@@ -105,6 +105,9 @@ def _trace_content(
             continue
         if str(reference.get("trace_id") or "").lower() != trace_id:
             continue
+        referenced_root = str(reference.get("root_span_id") or "").lower() or None
+        if root_span_id and referenced_root and referenced_root != root_span_id:
+            continue
         if record.get("input_text") is not None:
             input_text = _message_text(record.get("input_text"))
         if record.get("output_text") is not None:
@@ -112,13 +115,16 @@ def _trace_content(
     return input_text, output_text
 
 
-def _trace_meta(records: Sequence[dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    latest: dict[str, dict[str, Any]] = {}
+def _trace_meta(
+    records: Sequence[dict[str, Any]],
+) -> dict[tuple[str, str | None], dict[str, Any]]:
+    latest: dict[tuple[str, str | None], dict[str, Any]] = {}
     for record in records:
         trace_id = str(record.get("trace_id") or "").lower()
         if not trace_id:
             continue
-        value = latest.setdefault(trace_id, {})
+        root_span_id = str(record.get("root_span_id") or "").lower() or None
+        value = latest.setdefault((trace_id, root_span_id), {})
         if "name" in record:
             value["name"] = record.get("name") or None
         if "notes" in record:
@@ -126,14 +132,39 @@ def _trace_meta(records: Sequence[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     return latest
 
 
-def _root_attributes(trace: Mapping[str, Any]) -> dict[str, Any]:
+def _eval_case_dataset(record: Mapping[str, Any]) -> str:
+    return str((record.get("attributes") or {}).get("dataset") or "promoted-traces")
+
+
+def _latest_eval_cases(sidecars: SidecarStore) -> list[dict[str, Any]]:
+    latest: dict[tuple[str, str], dict[str, Any]] = {}
+    for record in sidecars.read("eval_cases"):
+        case_id = str(record.get("case_id") or "")
+        if case_id:
+            latest[(_eval_case_dataset(record), case_id)] = record
+    return list(latest.values())
+
+
+def _root_span(trace: Mapping[str, Any]) -> dict[str, Any]:
     root_id = str(trace.get("root_span_id") or "")
     spans = trace.get("spans") or []
     root = next(
         (span for span in spans if str(span.get("span_id") or "") == root_id),
         spans[0] if spans else {},
     )
-    return dict(root.get("attributes") or {})
+    return dict(root)
+
+
+def _root_attributes(trace: Mapping[str, Any]) -> dict[str, Any]:
+    return dict(_root_span(trace).get("attributes") or {})
+
+
+def _root_resource_attributes(trace: Mapping[str, Any]) -> dict[str, Any]:
+    root = _root_span(trace)
+    resource = root.get("resource") or {}
+    if not isinstance(resource, Mapping):
+        return {}
+    return dict(resource.get("attributes") or {})
 
 
 def _service_name(span: Mapping[str, Any]) -> str:
@@ -148,7 +179,7 @@ def _service_name(span: Mapping[str, Any]) -> str:
 
 
 class QualityView:
-    """Read-model for the Runway UI over canonical OTLP and Abbrivio sidecars."""
+    """Read-model for the Chorus UI over canonical OTLP and Abbrivio sidecars."""
 
     def __init__(self, traces: OtlpJsonlStore, sidecars: SidecarStore):
         self.traces = traces
@@ -161,11 +192,6 @@ class QualityView:
             self._run(trace, content, metadata) for trace in self.traces.trace_views()
         ]
         overrides = self.sidecars.read("group_overrides")
-        hidden = {
-            str(row.get("group_id"))
-            for row in overrides
-            if row.get("type") == "hide_group"
-        }
         for override in overrides:
             kind = override.get("type")
             agent_id = str(override.get("agent_id") or "")
@@ -180,21 +206,23 @@ class QualityView:
                     if run["agent_id"] == agent_id and run["group_id"] == group_id:
                         run["group_id"] = None
                         run["group_name"] = None
-        return [run for run in runs if run.get("group_id") not in hidden]
+        return runs
 
     def _run(
         self,
         trace: dict[str, Any],
         content: Sequence[dict[str, Any]],
-        metadata: Mapping[str, dict[str, Any]],
+        metadata: Mapping[tuple[str, str | None], dict[str, Any]],
     ) -> dict[str, Any]:
         spans = list(trace.get("spans") or [])
-        root_attributes = _root_attributes(trace)
+        root_attributes = {
+            **_root_resource_attributes(trace),
+            **_root_attributes(trace),
+        }
         trace_id = str(trace.get("trace_id") or "").lower()
+        root_span_id = str(trace.get("root_span_id") or "").lower() or None
         services = sorted({_service_name(span) for span in spans})
-        primary_service = next(
-            (service for service in services if service != "unknown"), "unknown"
-        )
+        primary_service = _service_name(_root_span(trace))
         agent_id = str(
             _first(
                 root_attributes,
@@ -237,12 +265,16 @@ class QualityView:
         else:
             mode = "dev"
 
-        input_text, output_text = _trace_content(content, trace_id)
+        input_text, output_text = _trace_content(content, trace_id, root_span_id)
         models: set[str] = set()
         input_tokens = 0
         output_tokens = 0
         cache_read_tokens = 0
         cache_creation_tokens = 0
+        has_input_tokens = False
+        has_output_tokens = False
+        has_cache_read_tokens = False
+        has_cache_creation_tokens = False
         cost_usd = 0.0
         has_priced_cost = False
         for span in spans:
@@ -250,15 +282,26 @@ class QualityView:
             for key in ("gen_ai.response.model", "gen_ai.request.model"):
                 if attributes.get(key):
                     models.add(str(attributes[key]))
-            input_tokens += _integer(attributes.get("gen_ai.usage.input_tokens")) or 0
-            output_tokens += _integer(attributes.get("gen_ai.usage.output_tokens")) or 0
-            cache_read_tokens += (
-                _integer(attributes.get("gen_ai.usage.cache_read_input_tokens")) or 0
+            input_count = _integer(attributes.get("gen_ai.usage.input_tokens"))
+            if input_count is not None:
+                has_input_tokens = True
+                input_tokens += input_count
+            output_count = _integer(attributes.get("gen_ai.usage.output_tokens"))
+            if output_count is not None:
+                has_output_tokens = True
+                output_tokens += output_count
+            cache_read_count = _integer(
+                attributes.get("gen_ai.usage.cache_read_input_tokens")
             )
-            cache_creation_tokens += (
-                _integer(attributes.get("gen_ai.usage.cache_creation_input_tokens"))
-                or 0
+            if cache_read_count is not None:
+                has_cache_read_tokens = True
+                cache_read_tokens += cache_read_count
+            cache_creation_count = _integer(
+                attributes.get("gen_ai.usage.cache_creation_input_tokens")
             )
+            if cache_creation_count is not None:
+                has_cache_creation_tokens = True
+                cache_creation_tokens += cache_creation_count
             amount = _number(attributes.get("abbrivio.cost.amount"))
             currency = str(attributes.get("abbrivio.cost.currency") or "USD").upper()
             if amount is not None and amount >= 0 and currency == "USD":
@@ -282,9 +325,12 @@ class QualityView:
                         "gen_ai.output",
                     )
                 )
-        meta = metadata.get(trace_id, {})
+        meta = metadata.get(
+            (trace_id, root_span_id), metadata.get((trace_id, None), {})
+        )
         return {
             "trace_id": trace_id,
+            "root_span_id": root_span_id,
             "corpus": str(self.traces.path),
             "agent_id": agent_id,
             "agent_version": _first(
@@ -313,10 +359,14 @@ class QualityView:
             else "ok",
             "models": sorted(models),
             "services": services,
-            "input_tokens": input_tokens,
-            "output_tokens": output_tokens,
-            "cache_read_input_tokens": cache_read_tokens,
-            "cache_creation_input_tokens": cache_creation_tokens,
+            "input_tokens": input_tokens if has_input_tokens else None,
+            "output_tokens": output_tokens if has_output_tokens else None,
+            "cache_read_input_tokens": (
+                cache_read_tokens if has_cache_read_tokens else None
+            ),
+            "cache_creation_input_tokens": (
+                cache_creation_tokens if has_cache_creation_tokens else None
+            ),
             "cost_usd": round(cost_usd, 10) if has_priced_cost else None,
             "latency_ms": _number(trace.get("latency_ms")),
             "started_at": _iso_from_nanos(trace.get("start_time_unix_nano")),
@@ -348,10 +398,40 @@ class QualityView:
                 rows = [row for row in rows if row.get(field) == value]
         return rows[:limit]
 
-    def run(self, trace_id: str) -> dict[str, Any] | None:
+    def run(
+        self, trace_id: str, root_span_id: str | None = None
+    ) -> dict[str, Any] | None:
         normalized = trace_id.lower()
+        normalized_root = root_span_id.lower() if root_span_id else None
         return next(
-            (row for row in self._runs() if row["trace_id"] == normalized), None
+            (
+                row
+                for row in self._runs()
+                if row["trace_id"] == normalized
+                and (
+                    normalized_root is None
+                    or row.get("root_span_id") == normalized_root
+                )
+            ),
+            None,
+        )
+
+    def trace_view(
+        self, trace_id: str, root_span_id: str | None = None
+    ) -> dict[str, Any] | None:
+        normalized = trace_id.lower()
+        normalized_root = root_span_id.lower() if root_span_id else None
+        return next(
+            (
+                trace
+                for trace in self.traces.trace_views()
+                if str(trace.get("trace_id") or "").lower() == normalized
+                and (
+                    normalized_root is None
+                    or str(trace.get("root_span_id") or "").lower() == normalized_root
+                )
+            ),
+            None,
         )
 
     @staticmethod
@@ -403,9 +483,11 @@ class QualityView:
             "children": roots,
         }
 
-    def trace_detail(self, trace_id: str) -> dict[str, Any] | None:
-        trace = self.traces.get_trace(trace_id)
-        run = self.run(trace_id)
+    def trace_detail(
+        self, trace_id: str, root_span_id: str | None = None
+    ) -> dict[str, Any] | None:
+        trace = self.trace_view(trace_id, root_span_id)
+        run = self.run(trace_id, root_span_id)
         if trace is None or run is None:
             return None
         feedback = self.sidecars.feedback_for_trace(trace_id.lower())
@@ -464,8 +546,10 @@ class QualityView:
             ],
         }
 
-    def trace_graph(self, trace_id: str) -> dict[str, Any] | None:
-        trace = self.traces.get_trace(trace_id)
+    def trace_graph(
+        self, trace_id: str, root_span_id: str | None = None
+    ) -> dict[str, Any] | None:
+        trace = self.trace_view(trace_id, root_span_id)
         if trace is None:
             return None
         return self._graph(trace.get("spans") or [], trace_id.lower())
@@ -508,9 +592,14 @@ class QualityView:
         }
 
     def groups(self) -> list[dict[str, Any]]:
+        hidden = {
+            str(row.get("group_id"))
+            for row in self.sidecars.read("group_overrides")
+            if row.get("type") == "hide_group"
+        }
         grouped: defaultdict[str, list[dict[str, Any]]] = defaultdict(list)
         for run in self._runs():
-            if run.get("group_id"):
+            if run.get("group_id") and str(run["group_id"]) not in hidden:
                 grouped[str(run["group_id"])].append(run)
         values = []
         for group_id, rows in grouped.items():
@@ -561,7 +650,7 @@ class QualityView:
         nodes: dict[str, dict[str, Any]] = {}
         edges: defaultdict[tuple[str, str], int] = defaultdict(int)
         for run in runs:
-            graph = self.trace_graph(run["trace_id"])
+            graph = self.trace_graph(run["trace_id"], run.get("root_span_id"))
             if graph is None:
                 continue
             for node in graph["nodes"]:
@@ -594,13 +683,13 @@ class QualityView:
         }
 
     def datasets(self) -> list[dict[str, Any]]:
-        records = self.sidecars.latest("eval_cases", "case_id")
+        records = _latest_eval_cases(self.sidecars)
         grouped: defaultdict[str, list[dict[str, Any]]] = defaultdict(list)
         for record in records:
             attributes = record.get("attributes") or {}
             if attributes.get("chorus.deleted"):
                 continue
-            dataset = str(attributes.get("dataset") or "promoted-traces")
+            dataset = _eval_case_dataset(record)
             grouped[dataset].append(record)
         return [
             {
@@ -641,6 +730,18 @@ class QualityView:
                     "experiment_id": run.get("run_id"),
                     "name": f"{source} · {model}",
                     "description": f"{passed}/{total} passed",
+                    "kind": "aggregate",
+                    "created_at": run.get("created_at"),
+                    "source": source,
+                    "model": model,
+                    "evaluator": run.get("evaluator") or "unknown",
+                    "passed": int(passed or 0),
+                    "failed": int(run.get("failed") or 0),
+                    "total": int(total or 0),
+                    "metrics": run.get("metrics") or {},
+                    "evaluated_models": (run.get("raw_summary") or {}).get(
+                        "evaluated_output_models", []
+                    ),
                     "baseline": None,
                     "candidate": None,
                     "trace_ids": [],
@@ -650,58 +751,11 @@ class QualityView:
         return rows
 
     def experiment_matrix(self, experiment_id: str) -> dict[str, Any] | None:
-        run = next(
-            (
-                row
-                for row in self.sidecars.read("eval_runs")
-                if str(row.get("run_id") or "") == experiment_id
-            ),
-            None,
-        )
-        experiment = next(
-            (
-                row
-                for row in self.experiments()
-                if row["experiment_id"] == experiment_id
-            ),
-            None,
-        )
-        if run is None or experiment is None:
-            return None
-        metrics = run.get("metrics") or {}
-        model = str(run.get("model") or run.get("evaluator") or "model")
-        rows = sorted(str(name) for name in metrics)
-        cells = []
-        for name in rows:
-            metric = metrics.get(name) or {}
-            total = int(metric.get("total") or 0)
-            score = _number(metric.get("score"))
-            if score is None and total:
-                score = int(metric.get("passed") or 0) / total
-            cells.append(
-                {
-                    "row": name,
-                    "col": model,
-                    "n": total,
-                    "trace_ids": [],
-                    "avg_cost_usd": None,
-                    "avg_latency_ms": None,
-                    "value_mean": score,
-                }
-            )
-        return {
-            "experiment_id": experiment_id,
-            "experiment": experiment,
-            "score_name": "pass rate",
-            "metric_type": "numeric",
-            "higher_is_better": True,
-            "row_key": "metric",
-            "col_key": "model",
-            "axis_options": {"metric": rows, "model": [model]},
-            "rows": rows,
-            "cols": [model],
-            "cells": cells,
-        }
+        # Aggregate evaluation summaries are reports, not comparison matrices.
+        # A future matrix implementation must be backed by multiple candidate
+        # runs linked to the same cases instead of treating metric names as an
+        # axis and a single model as the other axis.
+        return None
 
     def status(self) -> dict[str, Any]:
         corpus = {
@@ -753,7 +807,7 @@ def create_quality_router(
     traces: OtlpJsonlStore,
     sidecars: SidecarStore,
 ) -> APIRouter:
-    """Expose the provider-neutral API expected by the migrated Runway UI."""
+    """Expose the provider-neutral API expected by the Chorus quality UI."""
     router = APIRouter(prefix="/api")
     view = QualityView(traces, sidecars)
 
@@ -805,6 +859,8 @@ def create_quality_router(
         agent_id = str(body.get("agent_id") or "").strip()
         if not agent_id:
             raise HTTPException(status_code=422, detail="agent_id is required")
+        if not any(run["agent_id"] == agent_id for run in view.runs(limit=100_000)):
+            raise HTTPException(status_code=404, detail="agent not found")
         sidecars.append(
             "group_overrides",
             {
@@ -816,7 +872,7 @@ def create_quality_router(
         )
         detail = view.group_detail(group_id)
         if detail is None:
-            raise HTTPException(status_code=404, detail="agent not found")
+            raise HTTPException(status_code=404, detail="group not found")
         return detail
 
     @router.delete("/groups/{group_id}/agents/{agent_id}")
@@ -849,30 +905,36 @@ def create_quality_router(
         return detail
 
     @router.get("/ui/traces/{trace_id}")
-    def trace_detail(trace_id: str) -> dict[str, Any]:
-        detail = view.trace_detail(trace_id)
+    def trace_detail(trace_id: str, root_span_id: str | None = None) -> dict[str, Any]:
+        detail = view.trace_detail(trace_id, root_span_id)
         if detail is None:
             raise HTTPException(status_code=404, detail="trace not found")
         return detail
 
     @router.get("/traces/{trace_id}/logs")
-    def trace_logs(trace_id: str) -> list[dict[str, Any]]:
-        if view.run(trace_id) is None:
+    def trace_logs(
+        trace_id: str, root_span_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        if view.run(trace_id, root_span_id) is None:
             raise HTTPException(status_code=404, detail="trace not found")
         return []
 
     @router.get("/traces/{trace_id}/graph")
-    def trace_graph(trace_id: str) -> dict[str, Any]:
-        graph = view.trace_graph(trace_id)
+    def trace_graph(trace_id: str, root_span_id: str | None = None) -> dict[str, Any]:
+        graph = view.trace_graph(trace_id, root_span_id)
         if graph is None:
             raise HTTPException(status_code=404, detail="trace not found")
         return graph
 
     @router.put("/traces/{trace_id}/meta")
-    def set_trace_meta(trace_id: str, body: dict[str, Any]) -> dict[str, Any]:
-        if view.run(trace_id) is None:
+    def set_trace_meta(
+        trace_id: str, body: dict[str, Any], root_span_id: str | None = None
+    ) -> dict[str, Any]:
+        if view.run(trace_id, root_span_id) is None:
             raise HTTPException(status_code=404, detail="trace not found")
         record: dict[str, Any] = {"trace_id": trace_id.lower()}
+        if root_span_id:
+            record["root_span_id"] = root_span_id.lower()
         for field in ("name", "notes"):
             if field in body:
                 value = body[field]
@@ -881,12 +943,18 @@ def create_quality_router(
                         status_code=422, detail=f"{field} must be a string or null"
                     )
                 record[field] = value
-        if len(record) == 1:
+        if not any(field in record for field in ("name", "notes")):
             raise HTTPException(status_code=422, detail="name or notes is required")
         sidecars.append("trace_meta", record)
-        meta = _trace_meta(sidecars.read("trace_meta")).get(trace_id.lower(), {})
+        normalized_root = root_span_id.lower() if root_span_id else None
+        metadata = _trace_meta(sidecars.read("trace_meta"))
+        meta = metadata.get(
+            (trace_id.lower(), normalized_root),
+            metadata.get((trace_id.lower(), None), {}),
+        )
         return {
             "trace_id": trace_id.lower(),
+            "root_span_id": normalized_root,
             "name": meta.get("name"),
             "notes": meta.get("notes"),
         }
@@ -910,15 +978,18 @@ def create_quality_router(
         if any(row["name"] == new_name for row in view.datasets()):
             raise HTTPException(status_code=409, detail="dataset already exists")
         latest = {
-            str(row.get("case_id") or ""): row
-            for row in sidecars.latest("eval_cases", "case_id")
+            (_eval_case_dataset(row), str(row.get("case_id") or "")): row
+            for row in _latest_eval_cases(sidecars)
         }
         for example in source["examples"]:
-            record = dict(latest[str(example["example_id"])])
-            attributes = dict(record.get("attributes") or {})
-            attributes["dataset"] = new_name
-            record["attributes"] = attributes
-            sidecars.append("eval_cases", record)
+            record = dict(latest[(name, str(example["example_id"]))])
+            old_attributes = dict(record.get("attributes") or {})
+            old_attributes["chorus.deleted"] = True
+            sidecars.append("eval_cases", {**record, "attributes": old_attributes})
+            new_attributes = dict(record.get("attributes") or {})
+            new_attributes["dataset"] = new_name
+            new_attributes.pop("chorus.deleted", None)
+            sidecars.append("eval_cases", {**record, "attributes": new_attributes})
         return {"name": new_name, "example_count": source["example_count"]}
 
     @router.put("/datasets/{name}/examples/{example_id}")
@@ -928,12 +999,9 @@ def create_quality_router(
         record = next(
             (
                 row
-                for row in sidecars.latest("eval_cases", "case_id")
+                for row in _latest_eval_cases(sidecars)
                 if str(row.get("case_id") or "") == example_id
-                and str(
-                    (row.get("attributes") or {}).get("dataset") or "promoted-traces"
-                )
-                == name
+                and _eval_case_dataset(row) == name
             ),
             None,
         )
@@ -961,12 +1029,9 @@ def create_quality_router(
         record = next(
             (
                 row
-                for row in sidecars.latest("eval_cases", "case_id")
+                for row in _latest_eval_cases(sidecars)
                 if str(row.get("case_id") or "") == example_id
-                and str(
-                    (row.get("attributes") or {}).get("dataset") or "promoted-traces"
-                )
-                == name
+                and _eval_case_dataset(row) == name
             ),
             None,
         )
@@ -982,6 +1047,10 @@ def create_quality_router(
     @router.get("/experiments")
     def experiments(lookbook: str | None = None) -> list[dict[str, Any]]:
         return view.experiments(lookbook=lookbook)
+
+    @router.get("/eval-runs")
+    def eval_runs() -> list[dict[str, Any]]:
+        return view.experiments()
 
     @router.get("/experiments/{experiment_id}/matrix")
     def experiment_matrix(experiment_id: str) -> dict[str, Any]:
@@ -1061,7 +1130,7 @@ def create_quality_router(
             )
         else:
             raise HTTPException(status_code=404, detail="path not found")
-        imported = 0
+        decoded = []
         for candidate in candidates:
             try:
                 text = candidate.read_text(encoding="utf-8")
@@ -1071,17 +1140,18 @@ def create_quality_router(
                     else [text]
                 )
                 for payload in payloads:
-                    traces.append(decode_otlp_json(payload))
-                    imported += 1
+                    decoded.append(decode_otlp_json(payload))
             except (OSError, ValueError) as error:
                 raise HTTPException(
                     status_code=422,
                     detail=f"could not import {candidate.name}: {error}",
                 ) from error
+        for request in decoded:
+            traces.append(request)
         return {
             "imported_file": str(source),
             "run_count": len(view.runs(limit=1000)),
-            "records": imported,
+            "records": len(decoded),
         }
 
     @router.delete("/corpora")

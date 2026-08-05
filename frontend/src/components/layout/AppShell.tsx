@@ -1,10 +1,10 @@
 import {
-  BookOpen,
+  ClipboardCheck,
   ChevronRight,
   Database,
   Gauge,
   Layers,
-  PlaneTakeoff,
+  History,
   RefreshCw,
   Waypoints,
 } from 'lucide-react';
@@ -21,8 +21,8 @@ import { PATHS, tracesUrlForErrors } from '@/constants/path';
 // The four per-agent tools you drop into once inside a group.
 const TOOL_ITEMS = [
   { to: PATHS.TRACES, label: 'Traces', icon: Waypoints },
-  { to: PATHS.LOOKBOOKS, label: 'Lookbooks', icon: BookOpen },
-  { to: PATHS.RUNWAY, label: 'Runway', icon: PlaneTakeoff },
+  { to: PATHS.EVALS, label: 'Evals', icon: ClipboardCheck },
+  { to: PATHS.RUNS, label: 'Runs', icon: History },
   { to: PATHS.MONITOR, label: 'Monitor', icon: Gauge },
 ] as const;
 

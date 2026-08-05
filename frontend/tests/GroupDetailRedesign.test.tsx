@@ -113,7 +113,7 @@ describe('Promote from any lane', () => {
     const promoteButton = within(devRow).getByRole('button', { name: /Promote/ });
     fireEvent.click(promoteButton);
 
-    expect(await screen.findByText('Add to CI suite (→ Look)')).toBeInTheDocument();
+    expect(await screen.findByText('Add to eval suite')).toBeInTheDocument();
     expect(screen.getByText('Open in Traces')).toBeInTheDocument();
     expect(screen.queryByText('Replay locally in coding session')).not.toBeInTheDocument();
 

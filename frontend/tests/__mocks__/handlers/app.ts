@@ -50,6 +50,67 @@ const experiment = {
   run_count: 2,
 };
 
+const evalRun = {
+  experiment_id: 'deepeval-run-1',
+  name: 'deepeval · mixed',
+  description: '181/186 passed',
+  kind: 'aggregate' as const,
+  created_at: '2026-08-05T03:05:00Z',
+  source: 'deepeval',
+  model: 'mixed',
+  evaluator: 'judge-model',
+  evaluated_models: ['model-a', 'model-b'],
+  passed: 181,
+  failed: 5,
+  total: 186,
+  run_count: 186,
+  trace_ids: [],
+  metrics: {
+    escalation: {
+      group: 'multiturn_metrics',
+      passed: 0,
+      total: 2,
+      score: 0,
+      success: false,
+    },
+    workout_skill: {
+      group: 'specialized_metrics',
+      passed: 7,
+      total: 7,
+      score: 1,
+      success: true,
+    },
+  },
+};
+
+const evaluationOverview = {
+  runs: [],
+  cases: [],
+  catalog: [
+    {
+      schema_version: 1,
+      name: 'escalation',
+      group: 'multiturn',
+      source: 'tests.quality.deepeval_run',
+      runner: 'task deepeval',
+    },
+    {
+      schema_version: 1,
+      name: 'workout_skill',
+      group: 'specialized',
+      source: 'tests.quality.deepeval_run',
+      runner: 'task deepeval',
+    },
+    {
+      schema_version: 1,
+      name: 'Duplicate Response',
+      group: 'single_turn',
+      source: 'tests.quality.deepeval_run',
+      runner: 'task deepeval',
+    },
+  ],
+};
+
 // A matrix experiment (no A/B arms) — exercises the matrix-grid branch.
 const boolMatrixExperiment = {
   experiment_id: 'coder-matrix',
@@ -363,6 +424,8 @@ export const appHandlers = [
       numericMatrixExperiment,
     ])
   ),
+  http.get('*/api/eval-runs', () => HttpResponse.json([evalRun])),
+  http.get('*/api/evals', () => HttpResponse.json(evaluationOverview)),
   http.get('*/api/experiments/:experimentId/matrix', ({ params }) => {
     const matrix = matrices[params.experimentId as string];
     if (!matrix) return HttpResponse.json({ detail: 'not found' }, { status: 404 });

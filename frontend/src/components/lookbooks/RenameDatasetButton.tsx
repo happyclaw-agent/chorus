@@ -82,9 +82,10 @@ export function RenameDatasetButton({
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Rename Lookbook</DialogTitle>
+            <DialogTitle>Rename eval suite</DialogTitle>
             <DialogDescription>
-              Renames the dataset in place — every Look keeps its lineage, only the name changes.
+              Renames the suite in place — every eval case keeps its lineage; only the suite name
+              changes.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3">

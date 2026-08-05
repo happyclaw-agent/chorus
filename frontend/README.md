@@ -1,9 +1,9 @@
 # Chorus quality UI
 
-This is Chorus's React, TypeScript, and Vite frontend. It preserves the full
-Project Runway quality workflow—Agent Groups, Traces, Lookbooks, Runway,
-Monitor, and Sources—while reading generic OpenTelemetry traces and Abbrivio
-sidecars from the standalone Chorus API.
+This is Chorus's React, TypeScript, and Vite frontend. It provides the full
+Chorus quality workflow—Agent Groups, Traces, Evals, Runs, Monitor, and
+Sources—while reading generic OpenTelemetry traces and Abbrivio sidecars from
+the standalone Chorus API.
 
 ## Development
 

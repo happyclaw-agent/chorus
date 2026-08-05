@@ -3,13 +3,16 @@ export const PATHS = {
   GROUP_DETAIL: '/groups/:groupId',
   TRACES: '/traces',
   TRACE_DETAIL: '/traces/:traceId',
-  LOOKBOOKS: '/lookbooks',
-  RUNWAY: '/runway',
+  EVALS: '/evals',
+  RUNS: '/runs',
   MONITOR: '/monitor',
   SOURCES: '/sources',
 } as const;
 
-export const traceDetailPath = (traceId: string) => `/traces/${traceId}`;
+export const traceDetailPath = (traceId: string, rootSpanId?: string | null) => {
+  if (!rootSpanId) return `/traces/${traceId}`;
+  return `/traces/${traceId}?${new URLSearchParams({ root_span_id: rootSpanId })}`;
+};
 export const groupDetailPath = (groupId: string) => `/groups/${groupId}`;
 
 /** Traces filtered to one group (read by TracesPage's useSearchParams

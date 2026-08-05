@@ -104,10 +104,10 @@ export function useRemoveAgentFromGroup() {
   });
 }
 
-export function useTrace(traceId: string | undefined) {
+export function useTrace(traceId: string | undefined, rootSpanId?: string) {
   return useQuery({
-    queryKey: ['trace', traceId],
-    queryFn: () => api.getTrace(traceId!),
+    queryKey: ['trace', traceId, rootSpanId],
+    queryFn: () => api.getTrace(traceId!, rootSpanId),
     enabled: Boolean(traceId),
   });
 }
@@ -116,10 +116,10 @@ export function useTrace(traceId: string | undefined) {
  * GET /api/traces/{id}/logs — flat log records for a trace. Provided for the
  * next builder's Production deep-dive; not yet rendered by any view.
  */
-export function useTraceLogs(traceId: string | undefined) {
+export function useTraceLogs(traceId: string | undefined, rootSpanId?: string) {
   return useQuery({
-    queryKey: ['trace-logs', traceId],
-    queryFn: () => api.getTraceLogs(traceId!),
+    queryKey: ['trace-logs', traceId, rootSpanId],
+    queryFn: () => api.getTraceLogs(traceId!, rootSpanId),
     enabled: Boolean(traceId),
   });
 }
@@ -129,23 +129,39 @@ export function useTraceLogs(traceId: string | undefined) {
  * (the group-level component graph extended down to trace level). Rendered
  * on TraceDetailPage's "System lineage" panel.
  */
-export function useTraceGraph(traceId: string | undefined) {
+export function useTraceGraph(traceId: string | undefined, rootSpanId?: string) {
   return useQuery({
-    queryKey: ['trace-graph', traceId],
-    queryFn: () => api.getTraceGraph(traceId!),
+    queryKey: ['trace-graph', traceId, rootSpanId],
+    queryFn: () => api.getTraceGraph(traceId!, rootSpanId),
     enabled: Boolean(traceId),
   });
 }
 
 /**
- * GET /api/experiments — `filters.lookbook` (a dataset name) scopes the
- * result to experiments run against that Lookbook, e.g. the "Runs & Gates"
- * panel on LookbooksPage.
+ * GET /api/experiments — `filters.lookbook` (a legacy dataset query key)
+ * scopes the result to experiments run against that eval suite.
  */
 export function useExperiments(filters: ExperimentFilters = {}) {
   return useQuery({
     queryKey: ['experiments', filters],
     queryFn: () => api.getExperiments(filters),
+    refetchInterval: LIVE_REFETCH_MS,
+  });
+}
+
+/** Completed aggregate executions from any supported evaluation harness. */
+export function useEvalRuns() {
+  return useQuery({
+    queryKey: ['eval-runs'],
+    queryFn: () => api.getEvalRuns(),
+  });
+}
+
+/** Registered evaluator definitions plus generic case/run sidecars. */
+export function useEvaluationOverview() {
+  return useQuery({
+    queryKey: ['evaluation-overview'],
+    queryFn: () => api.getEvaluationOverview(),
     refetchInterval: LIVE_REFETCH_MS,
   });
 }
@@ -323,9 +339,9 @@ export function useRemoveCorpus() {
 }
 
 /**
- * POST /api/traces/{id}/promote — promote a trace to a Look. Invalidates the
- * datasets (Lookbooks), the trace detail, and the run/experiment/gate views so
- * the new Look and its lineage surface live.
+ * POST /api/traces/{id}/promote — promote a trace to an eval case. Invalidates
+ * eval suites, trace detail, and run/experiment/gate views so the new case and
+ * its lineage surface live.
  */
 export function usePromoteTrace() {
   const queryClient = useQueryClient();
@@ -350,8 +366,14 @@ export function usePromoteTrace() {
 export function useSetTraceMeta() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: ({ traceId, ...body }: { traceId: string } & TraceMetaParams) =>
-      api.setTraceMeta(traceId, body),
+    mutationFn: ({
+      traceId,
+      rootSpanId,
+      ...body
+    }: {
+      traceId: string;
+      rootSpanId?: string;
+    } & TraceMetaParams) => api.setTraceMeta(traceId, rootSpanId, body),
     onSuccess: (_result, variables) => {
       void queryClient.invalidateQueries({ queryKey: ['trace', variables.traceId] });
       void queryClient.invalidateQueries({ queryKey: ['runs'] });

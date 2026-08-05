@@ -86,7 +86,7 @@ export function RunsAndGatesPanel({ datasetName }: { datasetName: string }) {
         <div className="p-4 text-sm text-muted-foreground">Loading…</div>
       ) : experiments.length === 0 ? (
         <div data-testid="runs-and-gates-empty" className="p-4 text-sm text-muted-foreground">
-          No experiments have run against this Lookbook yet.
+          No eval runs are linked to this suite yet.
         </div>
       ) : (
         <div className="overflow-x-auto">

@@ -3,7 +3,7 @@ import { BookPlus } from 'lucide-react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 
 import { useExperiments, useGroups, useRuns } from '@/api/hooks';
-import type { RunStatus } from '@/api/types';
+import type { Run, RunStatus } from '@/api/types';
 import { PageHeader } from '@/components/layout/PageHeader';
 import { AddToLookbookDialog } from '@/components/traces/AddToLookbookDialog';
 import { AgentGroupFilter, type TraceSource } from '@/components/traces/AgentGroupFilter';
@@ -24,7 +24,7 @@ import { traceDetailPath } from '@/constants/path';
 import { formatCost, formatDuration, formatTokens, shortTraceId, truncate } from '@/lib/format';
 
 export function TracesPage() {
-  // Other pages (Groups, GroupDetail, Lookbooks) drill down into Traces via
+  // Other pages (Groups, GroupDetail, Evals) drill down into Traces via
   // query params — read them once on mount to seed the initial filters. This
   // intentionally only applies on first render (lazy useState initializers);
   // once the user starts changing filters, the URL isn't kept in sync, so
@@ -101,13 +101,15 @@ export function TracesPage() {
     );
   }, [runsQuery.data, search]);
 
-  const allSelected = rows.length > 0 && rows.every(run => selected.has(run.trace_id));
+  const runKey = (run: Run) => `${run.trace_id}:${run.root_span_id ?? ''}`;
+  const allSelected = rows.length > 0 && rows.every(run => selected.has(runKey(run)));
 
-  function toggleRow(traceId: string) {
+  function toggleRow(run: Run) {
+    const key = runKey(run);
     setSelected(previous => {
       const next = new Set(previous);
-      if (next.has(traceId)) next.delete(traceId);
-      else next.add(traceId);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
       return next;
     });
   }
@@ -115,7 +117,7 @@ export function TracesPage() {
   /** Header checkbox: selects/clears every currently-visible (filtered) row —
    * this is entry point 2, "create new from a filtered source". */
   function toggleAll() {
-    setSelected(allSelected ? new Set() : new Set(rows.map(run => run.trace_id)));
+    setSelected(allSelected ? new Set() : new Set(rows.map(runKey)));
   }
 
   return (
@@ -123,7 +125,7 @@ export function TracesPage() {
       <PageHeader
         eyebrow="Observability"
         title="Traces"
-        description="Every agent run, captured via OTEL. Any trace — or any single span — can be promoted to a Look and versioned."
+        description="Every agent run, captured via OTEL. Any trace can become a reusable eval case with its lineage preserved."
       />
 
       <div className="mb-3 flex flex-wrap items-center gap-2">
@@ -174,7 +176,7 @@ export function TracesPage() {
               onClick={() => setAddToLookbookOpen(true)}
             >
               <BookPlus className="size-3.5" />
-              Add to Lookbook
+              Add to eval
             </Button>
           </div>
         </div>
@@ -220,17 +222,17 @@ export function TracesPage() {
             <TableBody>
               {rows.map(run => (
                 <TableRow
-                  key={run.trace_id}
+                  key={runKey(run)}
                   className="cursor-pointer"
-                  onClick={() => navigate(traceDetailPath(run.trace_id))}
+                  onClick={() => navigate(traceDetailPath(run.trace_id, run.root_span_id))}
                 >
                   <TableCell onClick={event => event.stopPropagation()}>
                     <input
                       type="checkbox"
                       aria-label={`Select trace ${run.trace_id}`}
-                      checked={selected.has(run.trace_id)}
-                      onChange={() => toggleRow(run.trace_id)}
-                      data-testid={`trace-select-${run.trace_id}`}
+                      checked={selected.has(runKey(run))}
+                      onChange={() => toggleRow(run)}
+                      data-testid={`trace-select-${run.trace_id}${run.root_span_id ? `-${run.root_span_id}` : ''}`}
                     />
                   </TableCell>
                   <TableCell className="font-mono text-xs text-secondary-foreground">
@@ -275,7 +277,9 @@ export function TracesPage() {
       </div>
 
       <AddToLookbookDialog
-        traceIds={Array.from(selected)}
+        traces={rows
+          .filter(run => selected.has(runKey(run)))
+          .map(run => ({ traceId: run.trace_id, rootSpanId: run.root_span_id ?? undefined }))}
         open={addToLookbookOpen}
         onOpenChange={setAddToLookbookOpen}
         onPromoted={() => setSelected(new Set())}
