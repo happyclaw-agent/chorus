@@ -404,6 +404,7 @@ def create_app(
                 traces.path,
                 sidecars.path_for("feedback"),
                 sidecars.path_for("eval_cases"),
+                sidecars.path_for("eval_results"),
                 sidecars.path_for("eval_runs"),
             )
         )
@@ -456,6 +457,7 @@ def create_app(
             ]
             feedback = sidecars.deduplicated("feedback", "feedback_id")
             eval_runs = sidecars.read("eval_runs")
+            eval_results = sidecars.read("eval_results")
             latencies = [float(row.get("latency_ms") or 0) for row in trace_views]
             costs_by_currency: Counter[str] = Counter()
             priced_calls = 0
@@ -494,6 +496,7 @@ def create_app(
                     "feedback": len(feedback),
                     "eval_cases": len(load_evaluation_cases(sidecars)),
                     "eval_runs": len(eval_runs),
+                    "eval_results": len(eval_results),
                 },
                 "latency_ms": {
                     "mean": statistics.fmean(latencies) if latencies else None,
@@ -580,6 +583,7 @@ def create_app(
         return {
             "runs": runs,
             "cases": load_evaluation_cases(sidecars),
+            "results": sidecars.read("eval_results", limit=2000),
             "catalog": sidecars.latest("eval_catalog", "name"),
         }
 

@@ -8,6 +8,7 @@ import type {
   Dataset,
   Experiment,
   EvalRun,
+  EvalResultPage,
   EvaluationOverview,
   ExperimentGrid,
   ExperimentMatrix,
@@ -254,6 +255,10 @@ export const api = {
   /** GET /api/experiments — completed evaluation executions. */
   getExperiments: () => request<Experiment[]>('/experiments'),
   getEvalRuns: () => request<EvalRun[]>('/eval-runs'),
+  getEvalResults: (experimentId: string) =>
+    request<EvalResultPage>(`/eval-runs/${experimentId}/results`, {
+      params: { limit: 2000 },
+    }),
   getEvaluationOverview: () => request<EvaluationOverview>('/evals'),
   getExperimentGrid: (experimentId: string) =>
     request<ExperimentGrid>(`/experiments/${experimentId}/grid`),

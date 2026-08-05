@@ -1,6 +1,7 @@
 from abbrivio.sidecars.contracts import (
     ContentRecord,
     EvaluationCase,
+    EvaluationResult,
     EvaluationRun,
     FeedbackEvent,
     TraceRef,
@@ -17,6 +18,7 @@ from abbrivio.sidecars.store import SidecarResponseTooLarge, SidecarStore
 __all__ = [
     "ContentRecord",
     "EvaluationCase",
+    "EvaluationResult",
     "EvaluationRun",
     "FeedbackEvent",
     "HttpSidecarClient",

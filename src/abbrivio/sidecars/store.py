@@ -17,6 +17,7 @@ _FILES = {
     "content": "content.jsonl",
     "feedback": "feedback.jsonl",
     "eval_cases": "eval_cases.jsonl",
+    "eval_results": "eval_results.jsonl",
     "eval_runs": "eval_runs.jsonl",
     "eval_catalog": "eval_catalog.jsonl",
     "trace_meta": "trace_meta.jsonl",

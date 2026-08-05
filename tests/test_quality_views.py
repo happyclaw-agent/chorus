@@ -476,6 +476,61 @@ def test_eval_runs_appear_as_aggregate_reports_not_model_matrices(tmp_path):
     assert matrix.status_code == 404
 
 
+def test_eval_run_results_join_examples_feedback_and_otlp_usage(tmp_path):
+    client, sidecars, reference = _client_with_trace(tmp_path)
+    sidecars.append(
+        "eval_runs",
+        EvaluationRun(
+            schema_version=1,
+            run_id="run-with-results",
+            created_at=utc_now(),
+            source="deepeval",
+            model="model-a",
+            evaluator="judge-a",
+            passed=1,
+            failed=0,
+            total=1,
+            metrics={},
+            raw_summary={},
+            dataset="flex-quality",
+        ).to_dict(),
+    )
+    sidecars.append(
+        "eval_results",
+        {
+            "schema_version": 1,
+            "result_id": "result-1",
+            "run_id": "run-with-results",
+            "example_id": "example-1",
+            "dataset": "flex-quality",
+            "status": "passed",
+            "inputs": {"message": "Help me"},
+            "outputs": {"reply": "One step"},
+            "reference_outputs": {"criteria": "Helpful"},
+            "feedback": [{"key": "quality", "score": 1.0}],
+            "trace": {
+                "trace_id": reference.trace_id,
+                "span_id": reference.span_id,
+            },
+        },
+    )
+
+    run = client.get("/api/eval-runs").json()[0]
+    response = client.get("/api/eval-runs/run-with-results/results")
+    result = response.json()["results"][0]
+
+    assert run["kind"] == "experiment"
+    assert run["dataset"] == "flex-quality"
+    assert run["result_count"] == 1
+    assert response.json()["total"] == 1
+    assert result["inputs"] == {"message": "Help me"}
+    assert result["feedback"] == [{"key": "quality", "score": 1.0}]
+    assert result["execution"]["input_tokens"] == 100
+    assert result["execution"]["output_tokens"] == 25
+    assert result["execution"]["cost_usd"] == 0.00042
+    assert result["execution"]["latency_ms"] == 250
+
+
 def test_eval_run_normalizes_nullable_evaluated_models(tmp_path):
     client, sidecars, _reference = _client_with_trace(tmp_path)
     sidecars.append(

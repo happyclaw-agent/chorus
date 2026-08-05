@@ -57,16 +57,25 @@ describe('Agent Groups view', () => {
 });
 
 describe('Runs view', () => {
-  it('shows a DeepEval aggregate report rather than inventing a model matrix', async () => {
+  it('shows example rows and drills into their data, feedback, cost, and trace', async () => {
     renderApp('/runs');
 
     expect(await screen.findByRole('heading', { name: 'Runs' })).toBeInTheDocument();
     expect(await screen.findByText('181')).toBeInTheDocument();
-    expect(screen.getByText('186')).toBeInTheDocument();
-    expect(await screen.findByText('escalation')).toBeInTheDocument();
-    expect(screen.getByText('workout_skill')).toBeInTheDocument();
+    expect(await screen.findByText('fitness-tired-01')).toBeInTheDocument();
+    expect(screen.getByText('workout-plan-01')).toBeInTheDocument();
+    expect(screen.getByText('150')).toBeInTheDocument();
+    expect(screen.getByText('$0.01000')).toBeInTheDocument();
     expect(screen.getByTestId('eval-run-status')).toHaveTextContent('Needs attention');
-    expect(screen.queryByText('Model matrix')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByText('fitness-tired-01'));
+    expect(await screen.findByRole('dialog')).toHaveTextContent('I am too tired');
+    expect(screen.getByRole('dialog')).toHaveTextContent('Supportive accountability');
+    expect(screen.getByRole('dialog')).toHaveTextContent('The response was not empathetic.');
+    expect(screen.getByRole('link', { name: /Open execution trace/ })).toHaveAttribute(
+      'href',
+      '/traces/abc123def4567890?root_span_id=exported-root'
+    );
   });
 });
 

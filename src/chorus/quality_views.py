@@ -887,8 +887,16 @@ class QualityView:
         ]
 
     def experiments(self) -> list[dict[str, Any]]:
+        result_rows = self.sidecars.read("eval_results")
+        results_by_run: defaultdict[str, list[dict[str, Any]]] = defaultdict(list)
+        for result in result_rows:
+            run_id = str(result.get("run_id") or "")
+            if run_id:
+                results_by_run[run_id].append(result)
         rows = []
         for run in reversed(self.sidecars.read("eval_runs")):
+            run_id = str(run.get("run_id") or "")
+            run_results = results_by_run.get(run_id, [])
             source = run.get("source") or "evaluation"
             model = run.get("model") or "model"
             passed = run.get("passed", 0)
@@ -900,10 +908,10 @@ class QualityView:
                 evaluated_models = []
             rows.append(
                 {
-                    "experiment_id": run.get("run_id"),
+                    "experiment_id": run_id,
                     "name": f"{source} · {model}",
                     "description": f"{passed}/{total} passed",
-                    "kind": "aggregate",
+                    "kind": "experiment" if run_results else "aggregate",
                     "created_at": run.get("created_at"),
                     "source": source,
                     "model": model,
@@ -912,11 +920,69 @@ class QualityView:
                     "failed": int(run.get("failed") or 0),
                     "total": int(total or 0),
                     "metrics": run.get("metrics") or {},
+                    "dataset": run.get("dataset"),
+                    "result_count": len(run_results),
                     "evaluated_models": [str(model) for model in evaluated_models],
                     "baseline": None,
                     "candidate": None,
-                    "trace_ids": [],
-                    "run_count": int(run.get("total") or 0),
+                    "trace_ids": sorted(
+                        {
+                            str((result.get("trace") or {}).get("trace_id") or "")
+                            for result in run_results
+                            if (result.get("trace") or {}).get("trace_id")
+                        }
+                    ),
+                    "run_count": len(run_results),
+                }
+            )
+        return rows
+
+    def experiment_results(self, experiment_id: str) -> list[dict[str, Any]]:
+        """Join example results to their canonical OTLP execution metrics."""
+        latest: dict[str, dict[str, Any]] = {}
+        for record in self.sidecars.read("eval_results"):
+            if str(record.get("run_id") or "") != experiment_id:
+                continue
+            result_id = str(record.get("result_id") or "")
+            if result_id:
+                latest[result_id] = record
+
+        executions_by_trace: defaultdict[str, list[dict[str, Any]]] = defaultdict(list)
+        for execution in self._runs():
+            executions_by_trace[str(execution.get("trace_id") or "")].append(execution)
+
+        rows: list[dict[str, Any]] = []
+        for record in latest.values():
+            trace = record.get("trace") or {}
+            trace_id = str(trace.get("trace_id") or "")
+            root_span_id = str(trace.get("root_span_id") or "") or None
+            candidates = executions_by_trace.get(trace_id, [])
+            execution = next(
+                (
+                    candidate
+                    for candidate in candidates
+                    if root_span_id is None
+                    or candidate.get("root_span_id") == root_span_id
+                ),
+                candidates[0] if candidates else None,
+            )
+            rows.append(
+                {
+                    **record,
+                    "execution": (
+                        {
+                            "trace_id": execution.get("trace_id"),
+                            "root_span_id": execution.get("root_span_id"),
+                            "latency_ms": execution.get("latency_ms"),
+                            "input_tokens": execution.get("input_tokens"),
+                            "output_tokens": execution.get("output_tokens"),
+                            "cost_usd": execution.get("cost_usd"),
+                            "status": execution.get("status"),
+                            "models": execution.get("models") or [],
+                        }
+                        if execution is not None
+                        else None
+                    ),
                 }
             )
         return rows
@@ -1271,6 +1337,22 @@ def create_quality_router(
     @router.get("/eval-runs")
     def eval_runs() -> list[dict[str, Any]]:
         return view.experiments()
+
+    @router.get("/eval-runs/{experiment_id}/results")
+    def eval_run_results(
+        experiment_id: str,
+        offset: int = Query(default=0, ge=0),
+        limit: int = Query(default=500, ge=1, le=2000),
+    ) -> dict[str, Any]:
+        if not any(row["experiment_id"] == experiment_id for row in view.experiments()):
+            raise HTTPException(status_code=404, detail="evaluation run not found")
+        results = view.experiment_results(experiment_id)
+        return {
+            "experiment_id": experiment_id,
+            "total": len(results),
+            "offset": offset,
+            "results": results[offset : offset + limit],
+        }
 
     @router.get("/experiments/{experiment_id}/matrix")
     def experiment_matrix(experiment_id: str) -> dict[str, Any]:

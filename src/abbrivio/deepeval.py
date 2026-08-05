@@ -3,10 +3,16 @@
 from __future__ import annotations
 
 import uuid
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from typing import Any
 
-from abbrivio.sidecars import EvaluationRun, SidecarStore, utc_now
+from abbrivio.sidecars import (
+    EvaluationResult,
+    EvaluationRun,
+    SidecarStore,
+    TraceRef,
+    utc_now,
+)
 
 _AGGREGATE_METRIC_FIELDS = {"passed", "total", "score", "success", "threshold"}
 
@@ -82,8 +88,10 @@ def export_deepeval_summary(
     *,
     source: str = "deepeval",
     retain_failure_details: bool = False,
+    dataset: str | None = None,
+    results: Iterable[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Write an aggregate evaluation run without assuming application groups."""
+    """Write a DeepEval experiment and its optional per-example executions."""
     metrics = _metrics(summary, retain_failure_details=retain_failure_details)
     evaluated_models = {
         str(value) for value in (summary.get("evaluated_output_models") or []) if value
@@ -118,10 +126,123 @@ def export_deepeval_summary(
         raw_summary=(
             dict(summary) if retain_failure_details else _safe_summary(summary, metrics)
         ),
+        dataset=dataset
+        or (str(summary["dataset"]) if summary.get("dataset") else None),
     )
     record = run.to_dict()
     store.append("eval_runs", record)
+    if results is not None:
+        export_evaluation_results(store, run.run_id, results, source=source)
     return record
+
+
+def _trace_ref(value: Any) -> TraceRef | None:
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise ValueError("evaluation result trace must be an object or null")
+    return TraceRef(
+        trace_id=str(value.get("trace_id") or ""),
+        span_id=(str(value["span_id"]) if value.get("span_id") else None),
+        root_span_id=(
+            str(value["root_span_id"]) if value.get("root_span_id") else None
+        ),
+    )
+
+
+def export_evaluation_results(
+    store: SidecarStore,
+    run_id: str,
+    results: Iterable[Mapping[str, Any]],
+    *,
+    source: str = "evaluation",
+) -> list[dict[str, Any]]:
+    """Persist application executions and evaluator feedback per dataset example."""
+    persisted: list[dict[str, Any]] = []
+    for position, value in enumerate(results):
+        result = dict(value)
+        result_id = str(
+            result.get("result_id")
+            or uuid.uuid5(uuid.NAMESPACE_URL, f"{run_id}:result:{position}")
+        )
+        example_id = str(result.get("example_id") or result_id)
+        dataset = str(result.get("dataset") or "evaluation")
+        inputs = result.get("inputs") or {}
+        outputs = result.get("outputs") or {}
+        references = result.get("reference_outputs")
+        feedback = result.get("feedback") or []
+        if not isinstance(inputs, Mapping) or not isinstance(outputs, Mapping):
+            raise ValueError("evaluation inputs and outputs must be objects")
+        if references is not None and not isinstance(references, Mapping):
+            raise ValueError("evaluation reference_outputs must be an object or null")
+        if not isinstance(feedback, list) or any(
+            not isinstance(item, Mapping) for item in feedback
+        ):
+            raise ValueError("evaluation feedback must be a list of objects")
+        row = EvaluationResult(
+            schema_version=1,
+            result_id=result_id,
+            run_id=run_id,
+            example_id=example_id,
+            dataset=dataset,
+            created_at=str(result.get("created_at") or utc_now()),
+            status=str(result.get("status") or "unknown"),
+            inputs=dict(inputs),
+            outputs=dict(outputs),
+            reference_outputs=dict(references) if references is not None else None,
+            feedback=[dict(item) for item in feedback],
+            trace=_trace_ref(result.get("trace")),
+            error=(str(result["error"]) if result.get("error") else None),
+            metadata={"source": source, **dict(result.get("metadata") or {})},
+        )
+        metadata = dict(result.get("metadata") or {})
+        store.append(
+            "eval_cases",
+            {
+                "schema_version": 1,
+                "case_id": example_id,
+                "name": str(metadata.get("name") or example_id),
+                "inputs": dict(inputs),
+                "reference_outputs": (
+                    dict(references) if references is not None else None
+                ),
+                "input_text": _primary_text(inputs),
+                "actual_output": None,
+                "expected_output": _primary_text(references),
+                "context": [str(item) for item in (metadata.get("context") or [])],
+                "source": str(metadata.get("example_source") or source),
+                "created_at": str(metadata.get("example_created_at") or utc_now()),
+                "tags": [str(item) for item in (metadata.get("tags") or [])],
+                "attributes": {"dataset": dataset, **metadata},
+            },
+        )
+        record = row.to_dict()
+        store.append("eval_results", record)
+        persisted.append(record)
+    return persisted
+
+
+def _primary_text(value: Mapping[str, Any] | None) -> str | None:
+    if value is None:
+        return None
+    if len(value) == 1:
+        item = next(iter(value.values()))
+        return item if isinstance(item, str) else str(item)
+    return str(dict(value))
+
+
+def load_evaluation_results(
+    store: SidecarStore, run_id: str | None = None
+) -> list[dict[str, Any]]:
+    """Load the latest result rows, optionally restricted to one experiment."""
+    latest: dict[str, dict[str, Any]] = {}
+    for record in store.read("eval_results"):
+        if run_id is not None and str(record.get("run_id") or "") != run_id:
+            continue
+        result_id = str(record.get("result_id") or "")
+        if result_id:
+            latest[result_id] = record
+    return list(latest.values())
 
 
 def load_evaluation_cases(store: SidecarStore) -> list[dict[str, Any]]:
