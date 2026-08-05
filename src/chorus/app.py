@@ -10,14 +10,16 @@ import threading
 import uuid
 from collections import Counter
 from collections.abc import Mapping, Sequence
+from html import escape
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Any
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import FastAPI, HTTPException, Query, Request, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field, ValidationError
-from starlette.concurrency import run_in_threadpool
+from starlette.staticfiles import StaticFiles
 
+from abbrivio.deepeval import load_evaluation_cases
 from abbrivio.otlp import OtlpJsonlStore, create_otlp_router, encode_otlp_json
 from abbrivio.otlp.receiver import require_bearer_auth
 from abbrivio.sidecars import (
@@ -34,13 +36,16 @@ from chorus.extraction import (
     DefaultGenAIExtractionProfile,
     ExtractionProfile,
 )
+from chorus.http import JsonObject
 from chorus.promotion import (
     AllowAllPromotionPolicy,
     AttributePromotionPolicy,
     PromotionPolicy,
 )
+from chorus.quality_views import create_quality_router
 
-STATIC_INDEX = Path(__file__).resolve().parent / "static" / "index.html"
+STATIC_DIR = Path(__file__).resolve().parent / "static"
+STATIC_INDEX = STATIC_DIR / "index.html"
 MAX_JSON_BODY_BYTES = 1024 * 1024
 
 
@@ -74,63 +79,6 @@ class FeedbackRequest(BaseModel):
         allow_inf_nan=False,
     )
     attributes: dict[str, Any] = Field(default_factory=dict)
-
-
-def _reject_json_constant(value: str) -> None:
-    raise ValueError(f"invalid JSON constant: {value}")
-
-
-def _decode_json_object(body: bytes) -> dict[str, Any]:
-    value = json.loads(body, parse_constant=_reject_json_constant)
-    if not isinstance(value, dict):
-        raise TypeError("request body must be a JSON object")
-    return value
-
-
-async def _read_bounded_json_object(
-    request: Request,
-    *,
-    max_body_bytes: int,
-) -> dict[str, Any]:
-    content_length = request.headers.get("content-length")
-    if content_length:
-        try:
-            declared_length = int(content_length)
-        except ValueError as error:
-            raise HTTPException(
-                status_code=400,
-                detail="invalid content length",
-            ) from error
-        if declared_length < 0:
-            raise HTTPException(status_code=400, detail="invalid content length")
-        if declared_length > max_body_bytes:
-            raise HTTPException(status_code=413, detail="JSON body is too large")
-
-    body = bytearray()
-    async for chunk in request.stream():
-        if len(body) + len(chunk) > max_body_bytes:
-            raise HTTPException(status_code=413, detail="JSON body is too large")
-        body.extend(chunk)
-    try:
-        return await run_in_threadpool(_decode_json_object, bytes(body))
-    except (TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise HTTPException(
-            status_code=422,
-            detail="request body must be a valid JSON object",
-        ) from error
-
-
-async def _bounded_json_object_dependency(request: Request) -> dict[str, Any]:
-    return await _read_bounded_json_object(
-        request,
-        max_body_bytes=request.app.state.max_json_body_bytes,
-    )
-
-
-JsonObject = Annotated[
-    dict[str, Any],
-    Depends(_bounded_json_object_dependency),
-]
 
 
 def _percentile(values: Sequence[float], percentile: float) -> float | None:
@@ -424,12 +372,13 @@ def create_app(
             sidecars.append("eval_catalog", definition)
             existing_catalog[name] = definition
 
-    app = FastAPI(title="Chorus", version="0.2.1")
+    app = FastAPI(title="Chorus", version="0.3.0")
     app.state.trace_store = traces
     app.state.sidecar_store = sidecars
     app.state.promotion_policy = policy
     app.state.max_json_body_bytes = max_json_body_bytes
     app.include_router(create_otlp_router(traces, api_token=configured_api_token))
+    app.include_router(create_quality_router(traces, sidecars))
 
     @app.middleware("http")
     async def protect_quality_api(request: Request, call_next):
@@ -459,9 +408,27 @@ def create_app(
             )
         )
 
+    def spa_response(request: Request) -> HTMLResponse:
+        root_path = str(request.scope.get("root_path") or "").rstrip("/")
+        base_path = f"{root_path}/" if root_path else "/"
+        environment = json.dumps({"BASE_PATH": base_path}).replace("<", "\\u003c")
+        html = STATIC_INDEX.read_text(encoding="utf-8")
+        asset_base_path = escape(base_path, quote=True)
+        html = html.replace('src="./assets/', f'src="{asset_base_path}assets/')
+        html = html.replace('href="./assets/', f'href="{asset_base_path}assets/')
+        html = html.replace(
+            'href="./chorus-mark.svg"', f'href="{asset_base_path}chorus-mark.svg"'
+        )
+        html = html.replace(
+            "<head>",
+            f"<head>\n    <script>window.ENV = {environment};</script>",
+            1,
+        )
+        return HTMLResponse(html)
+
     @app.get("/", include_in_schema=False)
-    def index() -> FileResponse:
-        return FileResponse(STATIC_INDEX)
+    def index(request: Request) -> HTMLResponse:
+        return spa_response(request)
 
     @app.get("/api/health")
     def health() -> dict[str, Any]:
@@ -525,7 +492,7 @@ def create_app(
                     "spans": len(spans),
                     "genai_calls": len(genai_spans),
                     "feedback": len(feedback),
-                    "eval_cases": len(sidecars.latest("eval_cases", "case_id")),
+                    "eval_cases": len(load_evaluation_cases(sidecars)),
                     "eval_runs": len(eval_runs),
                 },
                 "latency_ms": {
@@ -612,7 +579,7 @@ def create_app(
         runs = list(reversed(sidecars.read("eval_runs", limit=25)))
         return {
             "runs": runs,
-            "cases": sidecars.latest("eval_cases", "case_id"),
+            "cases": load_evaluation_cases(sidecars),
             "catalog": sidecars.latest("eval_catalog", "name"),
         }
 
@@ -757,16 +724,47 @@ def create_app(
             span_id=selected_span_id,
             root_span_id=requested_root_id or derived_root_id,
         )
-        identity = ":".join(
-            (
-                reference.trace_id,
-                reference.span_id or reference.root_span_id or "trace",
-                profile.profile_id,
+        dataset = request.attributes.get("dataset")
+        if dataset is not None and (
+            not isinstance(dataset, str) or not dataset.strip()
+        ):
+            raise HTTPException(
+                status_code=422, detail="dataset must be a non-empty string"
             )
+        if isinstance(dataset, str) and ("/" in dataset or "\\" in dataset):
+            raise HTTPException(
+                status_code=422, detail="dataset cannot contain path separators"
+            )
+        dataset_name = str(dataset or "promoted-traces")
+        selection_identity = reference.span_id or reference.root_span_id or "trace"
+        if requested_span_id is not None:
+            selection_identity = f"span:{selection_identity}"
+        identity_parts = [
+            reference.trace_id,
+            selection_identity,
+            profile.profile_id,
+        ]
+        if dataset_name != "promoted-traces":
+            identity_parts.append(dataset_name)
+        identity = ":".join(identity_parts)
+        case_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"chorus:{identity}"))
+        existing = next(
+            (
+                record
+                for record in load_evaluation_cases(sidecars)
+                if str(record.get("case_id") or "") == case_id
+                and str(
+                    (record.get("attributes") or {}).get("dataset") or "promoted-traces"
+                )
+                == dataset_name
+            ),
+            None,
         )
+        if existing is not None:
+            return existing
         case = EvaluationCase(
             schema_version=1,
-            case_id=str(uuid.uuid5(uuid.NAMESPACE_URL, f"chorus:{identity}")),
+            case_id=case_id,
             name=request.name or f"trace-{trace_id[:12]}",
             input_text=input_text,
             actual_output=actual_output,
@@ -866,5 +864,23 @@ def create_app(
         record = event.to_dict()
         sidecars.append("feedback", record)
         return record
+
+    assets = STATIC_DIR / "assets"
+    if assets.is_dir():
+        app.mount("/assets", StaticFiles(directory=assets), name="chorus-assets")
+
+    @app.get("/chorus-mark.svg", include_in_schema=False)
+    def chorus_mark() -> FileResponse:
+        return FileResponse(STATIC_DIR / "chorus-mark.svg", media_type="image/svg+xml")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    def spa_fallback(full_path: str, request: Request) -> HTMLResponse:
+        if (
+            full_path.startswith("api/")
+            or full_path.startswith("assets/")
+            or ("/" not in full_path and Path(full_path).suffix)
+        ):
+            raise HTTPException(status_code=404, detail="not found")
+        return spa_response(request)
 
     return app

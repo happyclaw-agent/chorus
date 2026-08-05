@@ -1,0 +1,425 @@
+import { useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+
+import type { ExperimentMatrix, MatrixCell, MatrixParams } from '@/api/types';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Select } from '@/components/ui/select';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { traceDetailPath } from '@/constants/path';
+import {
+  axisLabel,
+  formatCost,
+  formatDuration,
+  formatMetricValue,
+  shortModelName,
+} from '@/lib/format';
+import { cn } from '@/lib/utils';
+
+/** Human labels for the known matrix score names (the two the corpora carry). */
+const SCORE_LABELS: Record<string, string> = {
+  ground_truth_tests: 'Ground-truth tests (pass/fail)',
+  reviewer_verdict: 'Reviewer verdict (accuracy)',
+};
+
+function scoreLabel(name: string): string {
+  return SCORE_LABELS[name] ?? name.replace(/_/g, ' ');
+}
+
+/** Whether an axis key holds model ids (so header/row labels get shortened). */
+function isModelAxis(key: string): boolean {
+  return key.endsWith('model') || key === 'model';
+}
+
+/**
+ * Neon heatmap class for a 0..1 rate where higher is better. The ramp runs from
+ * violet/purple (low inference strength) → cyan (high), matching the legend.
+ * Class strings are static (defined in the theme's preset.css) so Tailwind's JIT
+ * never strips them; in dark mode each step adds an inner bloom so cells glow.
+ */
+function heatClass(rate: number | null | undefined): string {
+  if (rate == null) return 'heat-none';
+  if (rate >= 0.9) return 'heat-4';
+  if (rate >= 0.7) return 'heat-3';
+  if (rate >= 0.5) return 'heat-2';
+  if (rate >= 0.25) return 'heat-1';
+  return 'heat-0';
+}
+
+function pct(rate: number | null | undefined): string {
+  if (rate == null) return '—';
+  return `${Math.round(rate * 100)}%`;
+}
+
+interface ValueRange {
+  min: number;
+  max: number;
+}
+
+/** Min/max of value_mean across a numeric matrix's cells (for heat normalizing). */
+function valueRange(cells: MatrixCell[]): ValueRange | null {
+  const values = cells
+    .map(cell => cell.value_mean)
+    .filter((v): v is number => v != null && Number.isFinite(v));
+  if (values.length === 0) return null;
+  return { min: Math.min(...values), max: Math.max(...values) };
+}
+
+/**
+ * Normalize a numeric value to a 0..1 "goodness" rate across the grid's range,
+ * so the shared heat buckets (worse → better) apply. Inverts when a lower value
+ * is the better result. Falls back to a neutral mid when the grid is flat.
+ */
+function goodnessRate(
+  value: number | null | undefined,
+  range: ValueRange | null,
+  higherIsBetter: boolean
+): number | null {
+  if (value == null || !Number.isFinite(value) || !range) return null;
+  if (range.max === range.min) return 0.5;
+  const norm = (value - range.min) / (range.max - range.min);
+  return higherIsBetter ? norm : 1 - norm;
+}
+
+interface CellContent {
+  primary: string;
+  breakdown: string | null;
+  rate: number | null;
+}
+
+/** Derive the display + heat rate for a cell given the matrix metric type. */
+function cellContent(
+  cell: MatrixCell,
+  metric: ExperimentMatrix['metric_type'],
+  range: ValueRange | null,
+  higherIsBetter: boolean
+): CellContent {
+  if (metric === 'bool') {
+    const rate = cell.pass_rate ?? null;
+    if (cell.n === 1) {
+      return { primary: (cell.pass_count ?? 0) >= 1 ? '✓' : '✕', breakdown: null, rate };
+    }
+    return {
+      primary: pct(rate),
+      breakdown: `${cell.pass_count ?? 0}/${cell.n} pass`,
+      rate,
+    };
+  }
+  if (metric === 'categorical') {
+    // Accuracy (vs ground truth) is only present for some categorical scores.
+    if (cell.accuracy != null) {
+      const correct = cell.correct ?? 0;
+      return {
+        primary: pct(cell.accuracy),
+        breakdown: `${correct}✓/${cell.n - correct}✗`,
+        rate: cell.accuracy,
+      };
+    }
+    return {
+      primary: String(cell.n),
+      breakdown: verdictSummary(cell.verdicts) || null,
+      rate: null,
+    };
+  }
+  if (metric === 'numeric') {
+    return {
+      primary: formatMetricValue(cell.value_mean),
+      breakdown: cell.n > 1 ? `mean · n=${cell.n}` : null,
+      rate: goodnessRate(cell.value_mean, range, higherIsBetter),
+    };
+  }
+  return { primary: String(cell.n), breakdown: null, rate: null };
+}
+
+function verdictSummary(verdicts: MatrixCell['verdicts']): string {
+  if (!verdicts) return '';
+  return (['approve', 'block', 'unparseable'] as const)
+    .filter(k => verdicts[k] != null)
+    .map(k => `${k} ${verdicts[k]}`)
+    .join(' · ');
+}
+
+function CellTooltip({
+  cell,
+  metric,
+  rowKey,
+  colKey,
+}: {
+  cell: MatrixCell;
+  metric: ExperimentMatrix['metric_type'];
+  rowKey: string;
+  colKey: string;
+}) {
+  return (
+    <div className="space-y-1 text-[11px]">
+      <div className="font-semibold">
+        {axisLabel(rowKey)}: {isModelAxis(rowKey) ? shortModelName(cell.row) : cell.row}
+      </div>
+      <div className="font-semibold">
+        {axisLabel(colKey)}: {isModelAxis(colKey) ? shortModelName(cell.col) : cell.col}
+      </div>
+      <div className="opacity-80">
+        {cell.n} run{cell.n === 1 ? '' : 's'}
+      </div>
+      {metric === 'bool' ? (
+        <div className="opacity-80">
+          {cell.pass_count ?? 0}/{cell.n} passed ({pct(cell.pass_rate)})
+        </div>
+      ) : null}
+      {metric === 'categorical' ? (
+        <>
+          {cell.accuracy != null ? (
+            <div className="opacity-80">accuracy {pct(cell.accuracy)}</div>
+          ) : null}
+          <div className="opacity-80">{verdictSummary(cell.verdicts)}</div>
+        </>
+      ) : null}
+      {metric === 'numeric' ? (
+        <div className="opacity-80">mean {formatMetricValue(cell.value_mean)}</div>
+      ) : null}
+      <div className="opacity-80">avg cost {formatCost(cell.avg_cost_usd)}</div>
+      <div className="opacity-80">avg latency {formatDuration(cell.avg_latency_ms)}</div>
+    </div>
+  );
+}
+
+export function MatrixGrid({
+  matrix,
+  params,
+  onParamsChange,
+}: {
+  matrix: ExperimentMatrix;
+  params: MatrixParams;
+  onParamsChange: (next: MatrixParams) => void;
+}) {
+  const navigate = useNavigate();
+  const [runsCell, setRunsCell] = useState<MatrixCell | null>(null);
+
+  const cellMap = useMemo(() => {
+    const map = new Map<string, MatrixCell>();
+    for (const cell of matrix.cells) map.set(`${cell.row}\u0000${cell.col}`, cell);
+    return map;
+  }, [matrix.cells]);
+
+  // Numeric heat is normalized across the whole grid's value_mean range.
+  const numericRange = useMemo(
+    () => (matrix.metric_type === 'numeric' ? valueRange(matrix.cells) : null),
+    [matrix.metric_type, matrix.cells]
+  );
+
+  const axisKeys = Object.keys(matrix.axis_options);
+  const scoreOptions = useMemo(() => {
+    const names = new Set<string>(Object.keys(SCORE_LABELS));
+    if (matrix.score_name) names.add(matrix.score_name);
+    return [...names].map(name => ({ value: name, label: scoreLabel(name) }));
+  }, [matrix.score_name]);
+
+  const openCell = (cell: MatrixCell) => {
+    if (cell.n === 0) return;
+    if (cell.n === 1) {
+      navigate(traceDetailPath(cell.trace_ids[0]));
+      return;
+    }
+    setRunsCell(cell);
+  };
+
+  return (
+    <div>
+      <div className="mb-3 flex flex-wrap items-center gap-2" data-testid="matrix-controls">
+        <Select
+          label="Rows"
+          allLabel={`Auto (${axisLabel(matrix.row_key)})`}
+          options={axisKeys.map(k => ({ value: k, label: axisLabel(k) }))}
+          value={params.row ?? ''}
+          onChange={e => onParamsChange({ ...params, row: e.target.value || undefined })}
+        />
+        <Select
+          label="Cols"
+          allLabel={`Auto (${axisLabel(matrix.col_key)})`}
+          options={axisKeys.map(k => ({ value: k, label: axisLabel(k) }))}
+          value={params.col ?? ''}
+          onChange={e => onParamsChange({ ...params, col: e.target.value || undefined })}
+        />
+        <Select
+          label="Score"
+          allLabel={matrix.score_name ? `Auto (${scoreLabel(matrix.score_name)})` : 'Auto'}
+          options={scoreOptions}
+          value={params.score ?? ''}
+          onChange={e => onParamsChange({ ...params, score: e.target.value || undefined })}
+        />
+      </div>
+
+      <div className="glow-panel overflow-x-auto rounded-lg border border-border bg-card dark:border-neon-purple/20">
+        {matrix.cells.length === 0 ? (
+          <div className="p-6 text-sm text-muted-foreground">
+            No runs scored on {matrix.score_name ? scoreLabel(matrix.score_name) : 'this score'} for
+            the selected axes. Pick a different score or axis.
+          </div>
+        ) : (
+          <table className="w-full border-collapse text-xs">
+            <thead>
+              <tr>
+                <th className="sticky left-0 z-10 min-w-40 border-b border-border bg-card px-3 py-2.5 text-left text-[10px] font-semibold tracking-wider text-muted-foreground uppercase">
+                  {axisLabel(matrix.row_key)} \ {axisLabel(matrix.col_key)}
+                </th>
+                {matrix.cols.map(col => (
+                  <th
+                    key={col}
+                    className="border-b border-border px-2 py-2.5 text-center text-[10px] font-semibold tracking-wider text-muted-foreground"
+                    title={col}
+                  >
+                    {isModelAxis(matrix.col_key) ? shortModelName(col) : col}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {matrix.rows.map(row => (
+                <tr key={row} className="border-b border-border last:border-b-0">
+                  <th
+                    scope="row"
+                    className="sticky left-0 z-10 border-r border-border bg-card px-3 py-2 text-left font-medium text-foreground"
+                    title={row}
+                  >
+                    {isModelAxis(matrix.row_key) ? shortModelName(row) : row}
+                  </th>
+                  {matrix.cols.map(col => {
+                    const cell = cellMap.get(`${row}\u0000${col}`);
+                    if (!cell || cell.n === 0) {
+                      return (
+                        <td
+                          key={col}
+                          className="border-l border-border bg-muted/20 px-2 py-2 text-center text-muted-foreground"
+                          data-testid="matrix-cell-empty"
+                        >
+                          <span className="opacity-40">·</span>
+                        </td>
+                      );
+                    }
+                    const content = cellContent(
+                      cell,
+                      matrix.metric_type,
+                      numericRange,
+                      matrix.higher_is_better
+                    );
+                    return (
+                      <td key={col} className="border-l border-border p-0 align-middle">
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <button
+                              type="button"
+                              onClick={() => openCell(cell)}
+                              data-testid="matrix-cell"
+                              className={cn(
+                                'flex h-full w-full min-w-16 cursor-pointer flex-col items-center gap-0.5 px-2 py-1.5 text-center text-foreground transition-[filter] hover:brightness-110',
+                                heatClass(content.rate)
+                              )}
+                            >
+                              <span className="text-sm font-semibold tabular-nums">
+                                {content.primary}
+                              </span>
+                              {content.breakdown ? (
+                                <span className="font-mono text-[10px] opacity-80">
+                                  {content.breakdown}
+                                </span>
+                              ) : null}
+                              <span className="font-mono text-[10px] opacity-70">
+                                {formatCost(cell.avg_cost_usd)}
+                              </span>
+                            </button>
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            <CellTooltip
+                              cell={cell}
+                              metric={matrix.metric_type}
+                              rowKey={matrix.row_key}
+                              colKey={matrix.col_key}
+                            />
+                          </TooltipContent>
+                        </Tooltip>
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+        <MatrixLegend
+          metric={matrix.metric_type}
+          scoreName={matrix.score_name}
+          higherIsBetter={matrix.higher_is_better}
+        />
+      </div>
+
+      <Dialog open={runsCell != null} onOpenChange={open => !open && setRunsCell(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              {runsCell
+                ? `${isModelAxis(matrix.row_key) ? shortModelName(runsCell.row) : runsCell.row} × ${
+                    isModelAxis(matrix.col_key) ? shortModelName(runsCell.col) : runsCell.col
+                  } — ${runsCell.n} runs`
+                : ''}
+            </DialogTitle>
+          </DialogHeader>
+          <ul className="max-h-80 space-y-1 overflow-y-auto">
+            {runsCell?.trace_ids.map((tid, i) => (
+              <li key={tid}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setRunsCell(null);
+                    navigate(traceDetailPath(tid));
+                  }}
+                  className="w-full cursor-pointer rounded-md border border-border bg-card px-3 py-1.5 text-left font-mono text-xs text-primary hover:bg-muted/40"
+                >
+                  Run {i + 1} · {tid.slice(0, 12)}…
+                </button>
+              </li>
+            ))}
+          </ul>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+function MatrixLegend({
+  metric,
+  scoreName,
+  higherIsBetter,
+}: {
+  metric: ExperimentMatrix['metric_type'];
+  scoreName: string | null;
+  higherIsBetter: boolean;
+}) {
+  const metricName = scoreName ? scoreLabel(scoreName) : 'the metric';
+  const label =
+    metric === 'bool'
+      ? 'cells show pass-rate · ✓/✕ for a single run'
+      : metric === 'categorical'
+        ? 'cells show verdict accuracy vs ground truth · correct✓/wrong✗'
+        : metric === 'numeric'
+          ? `cells show mean ${metricName} · ${higherIsBetter ? 'higher is better' : 'lower is better'}`
+          : 'cells show run counts';
+  // The gradient runs low → high inference strength (violet → cyan). For numeric
+  // metrics the extremes read as worse/better in the metric's own direction.
+  const [lowLabel, highLabel] = metric === 'numeric' ? ['worse', 'better'] : ['low', 'high'];
+  return (
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 border-t border-border px-3 py-2.5 text-[11px] text-muted-foreground">
+      <span>{label} · avg cost per run below</span>
+      <span className="ml-auto flex items-center gap-2">
+        <span className="neon-eyebrow">Inference Strength</span>
+        <span className="text-[10px] tracking-wide uppercase">{lowLabel}</span>
+        <span
+          className="legend-gradient h-2.5 w-28 rounded-full dark:shadow-[0_0_12px_-3px_var(--neon-purple)]"
+          aria-hidden
+        />
+        <span className="text-[10px] tracking-wide uppercase">{highLabel}</span>
+      </span>
+      <span className="flex items-center gap-1">
+        <span className="heat-none inline-block size-3 rounded-xs" /> no run
+      </span>
+    </div>
+  );
+}

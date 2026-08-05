@@ -1,0 +1,33 @@
+{
+  "manifestVersion": 1,
+  "generatedAt": "2026-08-05T05:02:15.350015Z",
+  "repository": "git@github.com:happyclaw-agent/chorus.git",
+  "prUrl": "https://github.com/happyclaw-agent/chorus/pull/3",
+  "demoedCommit": "54a5437a81cd6c7237868b013eed0333d5aeb7f2",
+  "kind": "browser",
+  "claims": [
+    "The Runs view renders the real aggregate DeepEval result as 181 passed and 5 failed across 186 checks, without inventing a model matrix.",
+    "The Evals view renders all 27 registered Flex evaluator definitions and identifies the 26 exercised by the latest run.",
+    "The restored Chorus UI reads the real local Flex OTLP trace and exposes monitor and OTLP source views."
+  ],
+  "launchCommands": [
+    "uv run chorus --data-dir /Users/happyclaw/worktrees/robofit-runway-flex-observability/.chorus --port 8010"
+  ],
+  "demoCommands": [
+    "record_browser_demo.cjs --url http://127.0.0.1:8010/runs --steps steps.json --output chorus-quality-ui.webm"
+  ],
+  "isolation": "Local Chorus server reading the isolated local Robofit .chorus OTLP and evaluation sidecars; no production services, customer messages, or mutable production data.",
+  "limitations": [
+    "The local store contains one Flex trace, so production-volume latency and cost trends remain sparse; the imported DeepEval run is complete."
+  ],
+  "artifacts": [
+    {
+      "path": "/private/tmp/chorus-pr-3-evidence-final/chorus-quality-ui.webm",
+      "name": "chorus-quality-ui.webm",
+      "bytes": 568824,
+      "sha256": "b6bd20edcaf97fd1a58893a49d7279c01ef468fb1ae43316a7febafba99ca2b8",
+      "mimeType": "video/webm",
+      "durationSeconds": 7.12
+    }
+  ]
+}

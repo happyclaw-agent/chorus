@@ -1,0 +1,33 @@
+{
+  "manifestVersion": 1,
+  "generatedAt": "2026-08-05T07:16:15.421040Z",
+  "repository": "git@github.com:happyclaw-agent/chorus.git",
+  "prUrl": "https://github.com/happyclaw-agent/chorus/pull/3",
+  "demoedCommit": "9cfb854538de25535d7c9ba0babaf05ea92e941e",
+  "kind": "browser",
+  "claims": [
+    "Runs displays the real DeepEval aggregate: 181 passed, 5 failed, 186 checks, and 26 metrics without inventing a model matrix",
+    "Evals displays 27 registered evaluator definitions, 26 exercised by the latest run, separately from the empty reusable case-suite collection",
+    "Traces, Monitor, and Sources navigate against the same live local OTLP-backed Chorus corpus"
+  ],
+  "launchCommands": [
+    "uv run chorus --data-dir <existing-local-chorus-data> --port 8010"
+  ],
+  "demoCommands": [
+    "Recorded real Chorus navigation: Runs -> Evals -> Traces -> Monitor -> Sources"
+  ],
+  "isolation": "Read-only local Chorus corpus; no production deploy, user mutation, or SMS delivery",
+  "limitations": [
+    "Demonstrates the local Chorus UI with existing Robofit trace and DeepEval result data; it does not exercise production infrastructure"
+  ],
+  "artifacts": [
+    {
+      "path": "docs/pr-evidence/3/9cfb854538de25535d7c9ba0babaf05ea92e941e/chorus-runs-evals.webm",
+      "name": "chorus-runs-evals.webm",
+      "bytes": 801852,
+      "sha256": "dd2fa9589af86c3b6ad640cae5db1c8e427affd36c040eedbe3ea88088baff14",
+      "mimeType": "video/webm",
+      "durationSeconds": 10.76
+    }
+  ]
+}

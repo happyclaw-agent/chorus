@@ -89,6 +89,29 @@ def test_generic_summary_field_names_and_case_loading(tmp_path):
     assert load_evaluation_cases(store) == [{"case_id": "case-1", "name": "updated"}]
 
 
+def test_case_loading_keeps_suite_identity_and_honors_tombstones(tmp_path):
+    store = SidecarStore(tmp_path)
+    store.append(
+        "eval_cases",
+        {"case_id": "case-1", "attributes": {"dataset": "suite-a"}},
+    )
+    store.append(
+        "eval_cases",
+        {"case_id": "case-1", "attributes": {"dataset": "suite-b"}},
+    )
+    store.append(
+        "eval_cases",
+        {
+            "case_id": "case-1",
+            "attributes": {"dataset": "suite-a", "chorus.deleted": True},
+        },
+    )
+
+    assert load_evaluation_cases(store) == [
+        {"case_id": "case-1", "attributes": {"dataset": "suite-b"}}
+    ]
+
+
 def test_single_evaluated_model_is_used_when_configuration_is_absent(tmp_path):
     run = export_deepeval_summary(
         SidecarStore(tmp_path),

@@ -1,42 +1,109 @@
 from pathlib import Path
 
-from chorus.app import STATIC_INDEX
+from fastapi.testclient import TestClient
+
+from chorus.app import STATIC_DIR, STATIC_INDEX, create_app
 
 
-def test_root_row_promotion_lets_api_select_descendant_span():
-    html = Path(STATIC_INDEX).read_text(encoding="utf-8")
+def _javascript_bundle() -> str:
+    bundles = list((STATIC_DIR / "assets").glob("index-*.js"))
+    assert len(bundles) == 1
+    return bundles[0].read_text(encoding="utf-8")
 
-    assert "let body = { root_span_id: rootSpanId || null };" in html
-    assert "let body = { span_id:" not in html
+
+def test_root_serves_built_chorus_react_application(tmp_path):
+    response = TestClient(create_app(tmp_path)).get("/")
+
+    assert response.status_code == 200
+    assert "Chorus — Agent Quality" in response.text
+    assert 'id="root"' in response.text
+    assert "/assets/index-" in response.text
+    assert "<base " not in response.text
 
 
-def test_quality_summary_exposes_usage_cost_latency_and_latest_eval():
-    html = Path(STATIC_INDEX).read_text(encoding="utf-8")
+def test_spa_routes_serve_the_same_application_shell(tmp_path):
+    client = TestClient(create_app(tmp_path))
+
+    assert client.get("/traces/example").text == client.get("/").text
+    assert client.get("/groups/example.agent").text == client.get("/").text
+    assert client.get("/monitor").text == client.get("/").text
+    assert client.get("/runs").text == client.get("/").text
+    assert client.get("/evals").text == client.get("/").text
+
+
+def test_spa_shell_supports_asgi_root_path_deployments(tmp_path):
+    client = TestClient(create_app(tmp_path), root_path="/chorus")
+
+    html = client.get("/runs").text
+
+    assert 'window.ENV = {"BASE_PATH": "/chorus/"}' in html
+    assert 'src="/chorus/assets/' in html
+    assert 'href="/chorus/assets/' in html
+    assert 'href="/chorus/chorus-mark.svg"' in html
+    assert "<base " not in html
+
+
+def test_spa_shell_escapes_asgi_root_path_in_asset_attributes(tmp_path):
+    client = TestClient(create_app(tmp_path), root_path='/chorus&copy;"test')
+
+    html = client.get("/runs").text
+
+    assert 'window.ENV = {"BASE_PATH": "/chorus&copy;\\"test/"}' in html
+    assert 'src="/chorus&amp;copy;&quot;test/assets/' in html
+    assert 'href="/chorus&amp;copy;&quot;test/assets/' in html
+    assert 'href="/chorus&amp;copy;&quot;test/chorus-mark.svg"' in html
+
+
+def test_nested_spa_routes_load_assets_from_the_application_root(tmp_path):
+    client = TestClient(create_app(tmp_path))
+
+    html = client.get("/traces/example").text
+
+    assert 'src="/assets/' in html
+    assert 'href="/assets/' in html
+    assert 'href="/chorus-mark.svg"' in html
+    assert "<base " not in html
+
+
+def test_built_ui_keeps_restored_navigation_and_chorus_branding():
+    bundle = _javascript_bundle()
 
     for label in (
-        "P95 latency",
-        "Total tokens",
-        "Known cost",
-        "Cost coverage",
-        "Latest eval",
+        "CHORUS",
+        "Agent Groups",
+        "Traces",
+        "Evals",
+        "Runs",
+        "Monitor",
+        "Sources",
+        "powered by Abbrivio",
     ):
-        assert label in html
-    assert "summary.usage.total_tokens" in html
-    assert "summary.cost.coverage" in html
-    assert "summary.latest_eval.passed" in html
+        assert label in bundle
 
 
-def test_ui_reuses_bearer_token_for_protected_quality_api_calls():
-    html = Path(STATIC_INDEX).read_text(encoding="utf-8")
+def test_built_ui_uses_session_only_chorus_api_token():
+    bundle = _javascript_bundle()
 
-    assert 'window.sessionStorage.getItem("chorus.apiToken")' in html
-    assert 'headers.set("authorization", `Bearer ${token}`)' in html
-    assert 'apiFetch("/api/summary")' in html
-    assert "await apiFetch(`/api/traces/${traceId}/promote`" in html
+    assert "chorus.apiToken" in bundle
+    assert "Authorization" in bundle
 
 
-def test_ui_escapes_all_eval_run_values_before_rendering_html():
-    html = Path(STATIC_INDEX).read_text(encoding="utf-8")
+def test_runtime_static_assets_exist():
+    assert Path(STATIC_INDEX).is_file()
+    assert (STATIC_DIR / "chorus-mark.svg").is_file()
+    stylesheets = list((STATIC_DIR / "assets").glob("index-*.css"))
+    assert len(stylesheets) == 1
+    stylesheet = stylesheets[0].read_text(encoding="utf-8")
+    assert "url(./" in stylesheet
+    assert "url(/assets/" not in stylesheet
 
-    assert "${esc(run.passed)}/${esc(run.total)}" in html
-    assert "${run.passed}/${run.total}" not in html
+
+def test_static_mark_is_served_and_missing_api_routes_do_not_return_the_spa(tmp_path):
+    client = TestClient(create_app(tmp_path))
+
+    mark = client.get("/chorus-mark.svg")
+
+    assert mark.status_code == 200
+    assert mark.headers["content-type"].startswith("image/svg+xml")
+    assert client.get("/api/not-a-route").status_code == 404
+    assert client.get("/missing.js").status_code == 404

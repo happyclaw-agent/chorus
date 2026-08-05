@@ -14,6 +14,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import chorus.app as chorus_app_module
+import chorus.http as chorus_http_module
 from abbrivio import AbbrivioCompletionObserver
 from abbrivio.otlp import OtlpJsonlSpanExporter, OtlpJsonlStore, encode_otlp_json
 from abbrivio.sidecars import (
@@ -641,7 +642,7 @@ def test_mutation_bodies_are_authenticated_before_bounded_json_decode(
         decoded = True
         raise AssertionError("unauthenticated body was decoded")
 
-    monkeypatch.setattr(chorus_app_module, "_decode_json_object", unexpected_decode)
+    monkeypatch.setattr(chorus_http_module, "_decode_json_object", unexpected_decode)
     client = TestClient(
         create_app(
             tmp_path,
@@ -723,13 +724,13 @@ def test_mutation_bodies_reject_invalid_or_non_object_json(tmp_path):
 
 def test_mutation_json_decode_runs_outside_the_event_loop(tmp_path, monkeypatch):
     decoder_threads: list[int] = []
-    original_decode = chorus_app_module._decode_json_object
+    original_decode = chorus_http_module._decode_json_object
 
     def recording_decode(body):
         decoder_threads.append(threading.get_ident())
         return original_decode(body)
 
-    monkeypatch.setattr(chorus_app_module, "_decode_json_object", recording_decode)
+    monkeypatch.setattr(chorus_http_module, "_decode_json_object", recording_decode)
     app = create_app(tmp_path)
 
     async def send_request() -> tuple[int, httpx.Response]:
