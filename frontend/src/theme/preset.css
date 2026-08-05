@@ -1,0 +1,345 @@
+@import '@fontsource/inter/latin-400.css';
+@import '@fontsource/inter/latin-500.css';
+@import '@fontsource/inter/latin-600.css';
+@import '@fontsource/roboto-mono/latin-400.css';
+
+@config './tailwind.config.ts';
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+:root {
+  --font-sans: 'Inter', sans-serif;
+  --font-mono: 'Roboto Mono';
+  --radius: 0.375rem;
+
+  /*
+   * Chorus neon accent layer. These extend the base palette (they reuse
+   * dr-ui's purple / pink / turquoise hues) with a few brighter, more saturated
+   * stops for the "sci-fi HUD" glow. Consumed via Tailwind (`neon-*` colors) and
+   * the component classes below. dr-ui reserved tokens stay the base everywhere.
+   */
+  --neon-purple: oklch(0.62 0.2 285);
+  --neon-violet: oklch(0.54 0.26 279);
+  --neon-magenta: oklch(0.66 0.24 340);
+  --neon-cyan: oklch(0.78 0.13 205);
+  --neon-blue: oklch(0.68 0.17 262);
+
+  /* Signature gradient (purple → magenta → cyan) reused by the wordmark,
+     eyebrows, the matrix legend, and hero accents. */
+  --neon-gradient: linear-gradient(
+    100deg,
+    var(--neon-violet) 0%,
+    var(--neon-purple) 28%,
+    var(--neon-magenta) 62%,
+    var(--neon-cyan) 100%
+  );
+  /* Ambient panel glow used on hero surfaces in dark mode. */
+  --glow-soft: 0 0 0 1px oklch(0.62 0.2 285 / 0.12), 0 8px 30px -12px oklch(0.62 0.2 285 / 0.35);
+
+  --react-table-pinned-left-border-box-shadow:
+    1px 0px 0px 0px rgba(124, 136, 154, 0.01), 3px 0px 0px 0px rgba(124, 136, 154, 0.01),
+    5px 0px 0px 0px rgba(124, 136, 154, 0.02), 7px 0px 0px 0px rgba(124, 136, 154, 0.02),
+    9px 0px 0px 0px rgba(124, 136, 154, 0.03), 11px 0px 0px 0px rgba(124, 136, 154, 0.04);
+
+  --react-table-pinned-right-border-box-shadow:
+    -1px 0px 0px 0px rgba(124, 136, 154, 0.01), -3px 0px 0px 0px rgba(124, 136, 154, 0.01),
+    -5px 0px 0px 0px rgba(124, 136, 154, 0.02), -7px 0px 0px 0px rgba(124, 136, 154, 0.02),
+    -9px 0px 0px 0px rgba(124, 136, 154, 0.03), -11px 0px 0px 0px rgba(124, 136, 154, 0.04);
+}
+
+.dark {
+  --react-table-pinned-left-border-box-shadow:
+    1px 0px 0px 0px rgba(17, 21, 25, 0.02), 3px 0px 0px 0px rgba(17, 21, 25, 0.04),
+    5px 0px 0px 0px rgba(17, 21, 25, 0.06), 7px 0px 0px 0px rgba(17, 21, 25, 0.08),
+    9px 0px 0px 0px rgba(17, 21, 25, 0.1), 11px 0px 0px 0px rgba(17, 21, 25, 0.12);
+
+  --react-table-pinned-right-border-box-shadow:
+    -1px 0px 0px 0px rgba(17, 21, 25, 0.02), -3px 0px 0px 0px rgba(17, 21, 25, 0.04),
+    -5px 0px 0px 0px rgba(17, 21, 25, 0.06), -7px 0px 0px 0px rgba(17, 21, 25, 0.08),
+    -9px 0px 0px 0px rgba(17, 21, 25, 0.1), -11px 0px 0px 0px rgba(17, 21, 25, 0.12);
+
+  /*
+   * Dark theme re-tuned toward a near-black, deep-navy neon look. We override
+   * the *values* of dr-ui's reserved semantic tokens (not the token names), so
+   * every existing `bg-card` / `border-border` / `bg-background` picks up the
+   * cinematic surface automatically. Light mode is untouched.
+   */
+  --background: oklch(0.16 0.015 275); /* near-black charcoal-navy */
+  --card: oklch(0.216 0.022 278); /* panels float above the void */
+  --popover: oklch(0.23 0.024 278);
+  --muted: oklch(0.3 0.03 278);
+  --muted-foreground: oklch(0.72 0.03 275);
+  --input: oklch(0.24 0.024 278);
+  --sidebar: oklch(0.185 0.02 276);
+  --sidebar-primary: oklch(0.28 0.05 284);
+  --sidebar-accent: oklch(0.26 0.035 282);
+  --border: oklch(0.34 0.03 282); /* cool luminous hairline */
+  --sidebar-border: oklch(0.32 0.03 282);
+
+  /* Brand + action go neon: primary is now vivid purple with light text. */
+  --primary: oklch(0.55 0.24 283);
+  --primary-foreground: oklch(0.98 0.01 280);
+  --accent: oklch(0.64 0.21 288);
+  --accent-foreground: oklch(0.85 0.13 295);
+  --ring: oklch(0.64 0.21 288);
+  --sidebar-ring: oklch(0.64 0.21 288);
+
+  /* Brighter semantic signals read better on the darker canvas. */
+  --success: oklch(0.8 0.17 152);
+  --warning: oklch(0.86 0.16 100);
+}
+
+@layer base {
+  body {
+    @apply bg-background text-foreground body;
+    font-family: var(--font-sans);
+  }
+  * {
+    border-color: var(--border);
+    /* TODO do we ned this? */
+    /* @apply border-border outline-ring/50; */
+  }
+  button:not(:disabled) {
+    cursor: pointer;
+  }
+
+  /*
+   * Native scrollbars (Firefox + Chromium). Sized down from the OS default
+   * and themed via `--border` / `--muted-foreground` so light + dark stay
+   * consistent without per-mode overrides.
+   */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+
+  *::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  *::-webkit-scrollbar-thumb {
+    background-color: var(--border);
+    border-radius: 9999px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+
+  *::-webkit-scrollbar-thumb:hover {
+    background-color: var(--muted-foreground);
+  }
+
+  *::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+}
+
+/* ==========================================================================
+   Chorus signature layer — grid backdrop, neon eyebrows, glow panels, and the
+   matrix heat ramp. Everything neon is gated to `.dark`; light mode keeps the
+   quiet dr-ui surface with only a faint grid.
+   ========================================================================== */
+
+/* App canvas: near-black base + ambient purple/magenta/cyan blooms + a fine
+   dotted grid. Applied to the app shell root so panels read as floating HUD
+   surfaces above the void. */
+.app-backdrop {
+  position: relative;
+  background-color: var(--background);
+}
+.app-backdrop::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(to right, oklch(0.7 0.05 280 / 0.05) 1px, transparent 1px),
+    linear-gradient(to bottom, oklch(0.7 0.05 280 / 0.05) 1px, transparent 1px);
+  background-size: 34px 34px;
+}
+.dark .app-backdrop::before {
+  background-image:
+    radial-gradient(1100px 560px at 12% -12%, oklch(0.62 0.2 285 / 0.16), transparent 60%),
+    radial-gradient(950px 520px at 105% 4%, oklch(0.66 0.24 340 / 0.12), transparent 55%),
+    radial-gradient(900px 720px at 62% 118%, oklch(0.78 0.13 205 / 0.1), transparent 60%),
+    linear-gradient(to right, oklch(0.8 0.06 285 / 0.045) 1px, transparent 1px),
+    linear-gradient(to bottom, oklch(0.8 0.06 285 / 0.045) 1px, transparent 1px);
+  background-size:
+    100% 100%,
+    100% 100%,
+    100% 100%,
+    34px 34px,
+    34px 34px;
+}
+/* Keep real content above the ::before backdrop layer. */
+.app-backdrop > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* Small uppercase monospace accent label — the section eyebrow / HUD tag. */
+.neon-eyebrow {
+  font-family: var(--font-mono);
+  font-size: 0.625rem;
+  line-height: 1rem;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+.dark .neon-eyebrow {
+  color: oklch(0.8 0.11 292);
+}
+
+/* Wordmark: gradient text of the signature ramp. */
+.neon-wordmark {
+  background: var(--neon-gradient);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  letter-spacing: 0.12em;
+}
+
+/* Hero panel glow (used sparingly — matrix + gate banner). */
+.dark .glow-panel {
+  box-shadow: var(--glow-soft);
+}
+
+/* Gradient hairline sweep for section dividers / legends. */
+.neon-rule {
+  background: var(--neon-gradient);
+  opacity: 0.55;
+}
+
+/* Pulsing "live" dot. */
+.live-dot {
+  position: relative;
+  display: inline-flex;
+  height: 0.5rem;
+  width: 0.5rem;
+}
+.live-dot::before,
+.live-dot::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 9999px;
+  background-color: var(--success);
+}
+.live-dot::before {
+  opacity: 0.7;
+  animation: runway-ping 1.6s cubic-bezier(0, 0, 0.2, 1) infinite;
+}
+
+@keyframes runway-ping {
+  75%,
+  100% {
+    transform: scale(2.4);
+    opacity: 0;
+  }
+}
+
+/*
+ * Matrix hero heat ramp: purple (low inference strength) → cyan (high). Static
+ * class names so Tailwind's JIT never strips them. Each step is a translucent
+ * neon wash; dark mode adds an inner bloom so cells glow like nodes.
+ */
+.heat-none {
+  background-color: oklch(0.5 0.02 280 / 0.12);
+}
+.heat-0 {
+  background-color: oklch(0.54 0.26 279 / 0.32);
+}
+.heat-1 {
+  background-color: oklch(0.58 0.23 296 / 0.34);
+}
+.heat-2 {
+  background-color: oklch(0.62 0.18 322 / 0.34);
+}
+.heat-3 {
+  background-color: oklch(0.68 0.15 245 / 0.34);
+}
+.heat-4 {
+  background-color: oklch(0.78 0.13 205 / 0.38);
+}
+.dark .heat-0 {
+  box-shadow: inset 0 0 22px -6px oklch(0.54 0.26 279 / 0.9);
+}
+.dark .heat-1 {
+  box-shadow: inset 0 0 22px -6px oklch(0.58 0.23 296 / 0.9);
+}
+.dark .heat-2 {
+  box-shadow: inset 0 0 22px -6px oklch(0.62 0.22 330 / 0.9);
+}
+.dark .heat-3 {
+  box-shadow: inset 0 0 22px -6px oklch(0.68 0.17 250 / 0.9);
+}
+.dark .heat-4 {
+  box-shadow: inset 0 0 24px -5px oklch(0.78 0.15 205 / 0.95);
+}
+
+/* Gradient legend bar (LOW → HIGH inference strength). */
+.legend-gradient {
+  background: linear-gradient(
+    90deg,
+    oklch(0.54 0.26 279),
+    oklch(0.58 0.23 296),
+    oklch(0.62 0.2 330),
+    oklch(0.68 0.16 250),
+    oklch(0.78 0.14 205)
+  );
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}

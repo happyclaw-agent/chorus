@@ -19,6 +19,8 @@ _FILES = {
     "eval_cases": "eval_cases.jsonl",
     "eval_runs": "eval_runs.jsonl",
     "eval_catalog": "eval_catalog.jsonl",
+    "trace_meta": "trace_meta.jsonl",
+    "group_overrides": "group_overrides.jsonl",
 }
 
 _PATH_LOCKS: dict[Path, threading.RLock] = {}

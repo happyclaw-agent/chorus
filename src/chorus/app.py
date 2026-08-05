@@ -17,6 +17,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field, ValidationError
 from starlette.concurrency import run_in_threadpool
+from starlette.staticfiles import StaticFiles
 
 from abbrivio.otlp import OtlpJsonlStore, create_otlp_router, encode_otlp_json
 from abbrivio.otlp.receiver import require_bearer_auth
@@ -39,8 +40,10 @@ from chorus.promotion import (
     AttributePromotionPolicy,
     PromotionPolicy,
 )
+from chorus.quality_views import create_quality_router
 
-STATIC_INDEX = Path(__file__).resolve().parent / "static" / "index.html"
+STATIC_DIR = Path(__file__).resolve().parent / "static"
+STATIC_INDEX = STATIC_DIR / "index.html"
 MAX_JSON_BODY_BYTES = 1024 * 1024
 
 
@@ -424,12 +427,13 @@ def create_app(
             sidecars.append("eval_catalog", definition)
             existing_catalog[name] = definition
 
-    app = FastAPI(title="Chorus", version="0.2.1")
+    app = FastAPI(title="Chorus", version="0.3.0")
     app.state.trace_store = traces
     app.state.sidecar_store = sidecars
     app.state.promotion_policy = policy
     app.state.max_json_body_bytes = max_json_body_bytes
     app.include_router(create_otlp_router(traces, api_token=configured_api_token))
+    app.include_router(create_quality_router(traces, sidecars))
 
     @app.middleware("http")
     async def protect_quality_api(request: Request, call_next):
@@ -866,5 +870,13 @@ def create_app(
         record = event.to_dict()
         sidecars.append("feedback", record)
         return record
+
+    assets = STATIC_DIR / "assets"
+    if assets.is_dir():
+        app.mount("/assets", StaticFiles(directory=assets), name="chorus-assets")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    def spa_fallback(full_path: str) -> FileResponse:
+        return FileResponse(STATIC_INDEX)
 
     return app
