@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query, Request, Response
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field, ValidationError
 from starlette.staticfiles import StaticFiles
 
@@ -407,9 +407,18 @@ def create_app(
             )
         )
 
+    def spa_response(request: Request) -> HTMLResponse:
+        root_path = str(request.scope.get("root_path") or "").rstrip("/")
+        base_path = f"{root_path}/" if root_path else "/"
+        environment = json.dumps({"BASE_PATH": base_path}).replace("<", "\\u003c")
+        html = STATIC_INDEX.read_text(encoding="utf-8").replace(
+            "<head>", f"<head>\n    <script>window.ENV = {environment};</script>", 1
+        )
+        return HTMLResponse(html)
+
     @app.get("/", include_in_schema=False)
-    def index() -> FileResponse:
-        return FileResponse(STATIC_INDEX)
+    def index(request: Request) -> HTMLResponse:
+        return spa_response(request)
 
     @app.get("/api/health")
     def health() -> dict[str, Any]:
@@ -855,13 +864,13 @@ def create_app(
         return FileResponse(STATIC_DIR / "chorus-mark.svg", media_type="image/svg+xml")
 
     @app.get("/{full_path:path}", include_in_schema=False)
-    def spa_fallback(full_path: str) -> FileResponse:
+    def spa_fallback(full_path: str, request: Request) -> HTMLResponse:
         if (
             full_path.startswith("api/")
             or full_path.startswith("assets/")
             or ("/" not in full_path and Path(full_path).suffix)
         ):
             raise HTTPException(status_code=404, detail="not found")
-        return FileResponse(STATIC_INDEX)
+        return spa_response(request)
 
     return app

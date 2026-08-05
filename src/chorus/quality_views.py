@@ -733,10 +733,16 @@ class QualityView:
         }
 
     def groups(self) -> list[dict[str, Any]]:
+        overrides = self.sidecars.read("group_overrides")
         hidden = {
             str(row.get("group_id"))
-            for row in self.sidecars.read("group_overrides")
+            for row in overrides
             if row.get("type") == "hide_group"
+        }
+        declared = {
+            str(row.get("group_id")): str(row.get("group_name") or row.get("group_id"))
+            for row in overrides
+            if row.get("type") in {"add_agent", "remove_agent"} and row.get("group_id")
         }
         grouped: defaultdict[str, list[dict[str, Any]]] = defaultdict(list)
         runs, memberships = self._runs_and_memberships()
@@ -747,11 +753,17 @@ class QualityView:
                         {**run, "group_id": group_id, "group_name": group_name}
                     )
         values = []
-        for group_id, rows in grouped.items():
+        for group_id in sorted(set(grouped) | set(declared)):
+            if group_id in hidden:
+                continue
+            rows = grouped[group_id]
             values.append(
                 {
                     "group_id": group_id,
-                    "group_name": rows[0].get("group_name") or group_id,
+                    "group_name": (
+                        rows[0].get("group_name") if rows else declared.get(group_id)
+                    )
+                    or group_id,
                     "run_count": len(rows),
                     "errors": sum(row["status"] == "error" for row in rows),
                     "cost_usd": (
@@ -873,7 +885,7 @@ class QualityView:
 
     def experiments(self) -> list[dict[str, Any]]:
         rows = []
-        for run in reversed(self.sidecars.read("eval_runs", limit=100)):
+        for run in reversed(self.sidecars.read("eval_runs")):
             source = run.get("source") or "evaluation"
             model = run.get("model") or "model"
             passed = run.get("passed", 0)
@@ -1036,26 +1048,15 @@ def create_quality_router(
             {
                 "type": "remove_agent",
                 "group_id": group_id,
+                "group_name": current["group"]["group_name"],
                 "agent_id": agent_id,
             },
         )
         detail = view.group_detail(group_id)
         if detail is None:
-            return {
-                "group": {
-                    "group_id": group_id,
-                    "group_name": group_id,
-                    "run_count": 0,
-                    "errors": 0,
-                    "cost_usd": None,
-                    "first_seen": None,
-                    "last_seen": None,
-                    "modes": [],
-                    "services": [],
-                    "agent_ids": [],
-                },
-                "lanes": {"dev": [], "ci": [], "prod": [], "unknown": []},
-            }
+            raise HTTPException(
+                status_code=500, detail="group removal was not persisted"
+            )
         return detail
 
     @router.post("/groups/{group_id:path}/agents")
@@ -1319,7 +1320,7 @@ def create_quality_router(
 
     @router.post("/refresh")
     def refresh() -> dict[str, int]:
-        return {"runs": len(view.runs(limit=1000))}
+        return {"runs": view.run_count()}
 
     @router.get("/status")
     def status() -> dict[str, Any]:
@@ -1361,7 +1362,7 @@ def create_quality_router(
             traces.append(request)
         return {
             "imported_file": str(source),
-            "run_count": len(view.runs(limit=1000)),
+            "run_count": view.run_count(),
             "records": len(decoded),
         }
 

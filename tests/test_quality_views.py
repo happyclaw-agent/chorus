@@ -473,6 +473,18 @@ def test_eval_run_normalizes_nullable_evaluated_models(tmp_path):
     assert client.get("/api/eval-runs").json()[0]["evaluated_models"] == []
 
 
+def test_eval_run_history_is_not_truncated_at_one_hundred(tmp_path):
+    client, sidecars, _reference = _client_with_trace(tmp_path)
+    for index in range(101):
+        sidecars.append("eval_runs", {"run_id": f"run-{index}"})
+
+    runs = client.get("/api/eval-runs").json()
+
+    assert len(runs) == 101
+    assert runs[0]["experiment_id"] == "run-100"
+    assert runs[-1]["experiment_id"] == "run-0"
+
+
 def test_invalid_agent_override_does_not_write_durable_state(tmp_path):
     client, sidecars, _reference = _client_with_trace(tmp_path)
 
@@ -520,6 +532,22 @@ def test_invalid_group_removal_does_not_write_durable_state(tmp_path):
 
     assert response.status_code == 404
     assert sidecars.read("group_overrides") == []
+
+
+def test_removing_last_group_member_keeps_group_available_for_readding(tmp_path):
+    client, _sidecars, _reference = _client_with_trace(tmp_path)
+
+    removed = client.delete("/api/groups/example-agent/agents/example-agent")
+    empty = client.get("/api/groups/example-agent")
+    restored = client.post(
+        "/api/groups/example-agent/agents", json={"agent_id": "example-agent"}
+    )
+
+    assert removed.status_code == 200
+    assert empty.status_code == 200
+    assert empty.json()["group"]["agent_ids"] == []
+    assert restored.status_code == 200
+    assert restored.json()["group"]["agent_ids"] == ["example-agent"]
 
 
 def test_runs_support_server_side_search_count_and_pagination(tmp_path):

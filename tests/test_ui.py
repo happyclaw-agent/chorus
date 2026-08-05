@@ -30,6 +30,16 @@ def test_spa_routes_serve_the_same_application_shell(tmp_path):
     assert client.get("/evals").text == client.get("/").text
 
 
+def test_spa_shell_supports_asgi_root_path_deployments(tmp_path):
+    client = TestClient(create_app(tmp_path), root_path="/chorus")
+
+    html = client.get("/runs").text
+
+    assert 'window.ENV = {"BASE_PATH": "/chorus/"}' in html
+    assert 'src="./assets/' in html
+    assert 'href="./assets/' in html
+
+
 def test_built_ui_keeps_restored_navigation_and_chorus_branding():
     bundle = _javascript_bundle()
 
