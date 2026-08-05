@@ -974,19 +974,24 @@ class QualityView:
         for record in latest.values():
             trace = record.get("trace") or {}
             trace_id = str(trace.get("trace_id") or "").lower()
+            referenced_span_id = str(trace.get("span_id") or "").lower() or None
+            referenced_root_id = str(trace.get("root_span_id") or "").lower() or None
             candidates = executions_by_trace.get(trace_id, [])
-            execution = next(
-                (
-                    candidate
-                    for candidate in candidates
-                    if _sidecar_matches_root(
-                        record,
-                        root_span_id=candidate.get("root_span_id"),
-                        span_ids=span_ids_by_root.get(
-                            (trace_id, candidate.get("root_span_id")), set()
-                        ),
+
+            def matches_execution(candidate: Mapping[str, Any]) -> bool:
+                candidate_root = candidate.get("root_span_id")
+                span_ids = span_ids_by_root.get((trace_id, candidate_root), set())
+                if referenced_span_id is not None:
+                    return referenced_span_id in span_ids
+                if referenced_root_id is not None:
+                    return (
+                        referenced_root_id == candidate_root
+                        or referenced_root_id in span_ids
                     )
-                ),
+                return len(candidates) == 1
+
+            execution = next(
+                (candidate for candidate in candidates if matches_execution(candidate)),
                 None,
             )
             rows.append(

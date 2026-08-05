@@ -580,7 +580,11 @@ def test_eval_result_span_selects_the_matching_root_execution(tmp_path):
             "result_id": "result-1",
             "run_id": "multi-root",
             "example_id": "example-1",
-            "trace": {"trace_id": trace_id, "span_id": selected_root},
+            "trace": {
+                "trace_id": trace_id,
+                "span_id": selected_root,
+                "root_span_id": "44" * 8,
+            },
         },
     )
     client = TestClient(
