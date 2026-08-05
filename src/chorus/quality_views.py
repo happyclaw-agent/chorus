@@ -148,7 +148,11 @@ def _sidecar_matches_root(
         and referenced_root not in span_ids
     ):
         return False
-    return referenced_span is None or referenced_span in span_ids
+    return (
+        referenced_span is None
+        or referenced_span == root_span_id
+        or referenced_span in span_ids
+    )
 
 
 def _trace_meta(

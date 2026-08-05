@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from collections.abc import Iterable, Mapping
 from typing import Any
@@ -198,10 +199,15 @@ def _prepare_evaluation_results(
             )
         example_id = str(result.get("example_id") or result_id)
         result_dataset = str(result.get("dataset") or dataset)
-        inputs = result.get("inputs") or {}
-        outputs = result.get("outputs") or {}
+        inputs = result.get("inputs")
+        outputs = result.get("outputs")
         references = result.get("reference_outputs")
-        feedback = result.get("feedback") or []
+        feedback = result.get("feedback")
+        metadata = result.get("metadata")
+        inputs = {} if inputs is None else inputs
+        outputs = {} if outputs is None else outputs
+        feedback = [] if feedback is None else feedback
+        metadata = {} if metadata is None else metadata
         if not isinstance(inputs, Mapping) or not isinstance(outputs, Mapping):
             raise ValueError("evaluation inputs and outputs must be objects")
         if references is not None and not isinstance(references, Mapping):
@@ -210,6 +216,8 @@ def _prepare_evaluation_results(
             not isinstance(item, Mapping) for item in feedback
         ):
             raise ValueError("evaluation feedback must be a list of objects")
+        if not isinstance(metadata, Mapping):
+            raise ValueError("evaluation metadata must be an object")
         row = EvaluationResult(
             schema_version=1,
             result_id=result_id,
@@ -224,9 +232,9 @@ def _prepare_evaluation_results(
             feedback=[dict(item) for item in feedback],
             trace=_trace_ref(result.get("trace")),
             error=(str(result["error"]) if result.get("error") else None),
-            metadata={"source": source, **dict(result.get("metadata") or {})},
+            metadata={"source": source, **dict(metadata)},
         )
-        metadata = dict(result.get("metadata") or {})
+        metadata = dict(metadata)
         case_record = {
             "schema_version": 1,
             "case_id": example_id,
@@ -242,7 +250,13 @@ def _prepare_evaluation_results(
             "tags": [str(item) for item in (metadata.get("tags") or [])],
             "attributes": {**metadata, "dataset": result_dataset},
         }
-        prepared.append((case_record, row.to_dict()))
+        result_record = row.to_dict()
+        try:
+            json.dumps(case_record, allow_nan=False)
+            json.dumps(result_record, allow_nan=False)
+        except (TypeError, ValueError) as error:
+            raise ValueError("evaluation results must be JSON serializable") from error
+        prepared.append((case_record, result_record))
     return prepared
 
 

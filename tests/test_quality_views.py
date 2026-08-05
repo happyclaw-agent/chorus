@@ -678,6 +678,33 @@ def test_eval_result_aggregates_roots_under_missing_logical_parent(tmp_path):
     )
     trace_id = "11" * 16
     logical_parent = "44" * 8
+    reference = TraceRef(
+        trace_id=trace_id,
+        span_id=logical_parent,
+        root_span_id=logical_parent,
+    )
+    sidecars.append(
+        "content",
+        ContentRecord(
+            schema_version=1,
+            content_id="logical-content",
+            recorded_at=utc_now(),
+            trace=reference,
+            input_text="logical input",
+        ).to_dict(),
+    )
+    sidecars.append(
+        "feedback",
+        FeedbackEvent(
+            schema_version=1,
+            feedback_id="logical-feedback",
+            occurred_at=utc_now(),
+            kind="quality",
+            value=1,
+            source="test",
+            trace=reference,
+        ).to_dict(),
+    )
     observer(
         Observation(
             trace_id=trace_id,
@@ -746,6 +773,8 @@ def test_eval_result_aggregates_roots_under_missing_logical_parent(tmp_path):
     assert execution["output_tokens"] == 4
     assert execution["cost_usd"] == 0.002
     assert trace["run"]["input_tokens"] == 40
+    assert trace["run"]["input"] == "logical input"
+    assert trace["scores"][0]["name"] == "quality"
     assert trace["spans"]["span_id"] == "synthetic-root"
     assert {child["span_id"] for child in trace["spans"]["children"]} == {
         "22" * 8,

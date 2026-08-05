@@ -202,6 +202,45 @@ def test_invalid_result_batch_does_not_append_partial_experiment(tmp_path):
     assert store.read("eval_results") == []
 
 
+def test_falsy_non_object_result_fields_are_rejected(tmp_path):
+    store = SidecarStore(tmp_path)
+
+    for field, value in (("inputs", []), ("outputs", ""), ("feedback", {})):
+        try:
+            export_evaluation_results(store, "run-1", [{field: value}])
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"{field} should reject {value!r}")
+
+    assert store.read("eval_cases") == []
+    assert store.read("eval_results") == []
+
+
+def test_non_json_result_batch_does_not_append_partial_experiment(tmp_path):
+    store = SidecarStore(tmp_path)
+
+    try:
+        export_deepeval_summary(
+            store,
+            {"run_id": "invalid-json-run", "dataset": "flex-quality", "total": 1},
+            results=[
+                {
+                    "example_id": "example-1",
+                    "feedback": [{"key": "quality", "score": float("nan")}],
+                }
+            ],
+        )
+    except ValueError as error:
+        assert str(error) == "evaluation results must be JSON serializable"
+    else:
+        raise AssertionError("non-JSON result batch should fail")
+
+    assert store.read("eval_runs") == []
+    assert store.read("eval_cases") == []
+    assert store.read("eval_results") == []
+
+
 def test_separate_result_exports_do_not_reuse_generated_ids(tmp_path):
     store = SidecarStore(tmp_path)
 
