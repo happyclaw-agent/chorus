@@ -210,29 +210,32 @@ function LaneList({ mode, runs }: { mode: RunMode; runs: Run[] }) {
           No {MODE_META[mode].label} runs yet.
         </div>
       ) : (
-        runs.map(run => <RunRow key={run.trace_id} run={run} />)
+        runs.map(run => <RunRow key={`${run.trace_id}:${run.root_span_id ?? ''}`} run={run} />)
       )}
     </div>
   );
 }
 
 /**
- * "Related Lookbooks" (#44): which Lookbooks (datasets) have at least one
- * Look whose source trace's agent_id is a member of this group. Derived
- * entirely client-side from GET /api/datasets — no backend changes.
+ * Eval suites with a case promoted from one of this group's traced runs.
  */
-function RelatedLookbooksPanel({ agentIds }: { agentIds: string[] }) {
+function RelatedEvalSuitesPanel({ runs }: { runs: Run[] }) {
   const datasetsQuery = useDatasets();
 
   const related = useMemo(() => {
-    const members = new Set(agentIds);
+    const traceIds = new Set(runs.map(run => run.trace_id));
+    const rootIdentities = new Set(runs.map(run => `${run.trace_id}:${run.root_span_id ?? ''}`));
     return (datasetsQuery.data ?? []).filter((dataset: Dataset) =>
       dataset.examples.some(example => {
-        const agentId = example.metadata?.agent_id;
-        return typeof agentId === 'string' && members.has(agentId);
+        const sourceTrace = example.metadata?.source_trace;
+        const sourceRoot = example.metadata?.source_root_span;
+        if (typeof sourceTrace !== 'string') return false;
+        return typeof sourceRoot === 'string'
+          ? rootIdentities.has(`${sourceTrace}:${sourceRoot}`)
+          : traceIds.has(sourceTrace);
       })
     );
-  }, [datasetsQuery.data, agentIds]);
+  }, [datasetsQuery.data, runs]);
 
   return (
     <Panel title="Related eval suites">
@@ -366,7 +369,9 @@ export function GroupDetailPage() {
           {groupId ? <ProductionDeepDive groupId={groupId} prodRuns={data.lanes.prod} /> : null}
 
           <div className="mt-4">
-            <RelatedLookbooksPanel agentIds={data.group.agent_ids} />
+            <RelatedEvalSuitesPanel
+              runs={[...data.lanes.dev, ...data.lanes.ci, ...data.lanes.prod]}
+            />
           </div>
         </>
       ) : null}

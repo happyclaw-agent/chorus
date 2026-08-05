@@ -2,7 +2,6 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { api } from './client';
 import type {
-  ExperimentFilters,
   GateParams,
   MatrixParams,
   PromoteParams,
@@ -137,14 +136,11 @@ export function useTraceGraph(traceId: string | undefined, rootSpanId?: string) 
   });
 }
 
-/**
- * GET /api/experiments — `filters.lookbook` (a legacy dataset query key)
- * scopes the result to experiments run against that eval suite.
- */
-export function useExperiments(filters: ExperimentFilters = {}) {
+/** GET /api/experiments — completed evaluation executions. */
+export function useExperiments() {
   return useQuery({
-    queryKey: ['experiments', filters],
-    queryFn: () => api.getExperiments(filters),
+    queryKey: ['experiments'],
+    queryFn: () => api.getExperiments(),
     refetchInterval: LIVE_REFETCH_MS,
   });
 }

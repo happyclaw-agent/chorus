@@ -9,7 +9,6 @@ import type {
   Experiment,
   EvalRun,
   EvaluationOverview,
-  ExperimentFilters,
   ExperimentGrid,
   ExperimentMatrix,
   GateParams,
@@ -206,13 +205,8 @@ export const api = {
       expected: result.expected_output ?? result.actual_output,
     } satisfies PromoteResult;
   },
-  /**
-   * GET /api/experiments — `filters.lookbook` (dataset name) returns only
-   * experiments with at least one run/trace that resolved into that
-   * Lookbook, same query-param-filter convention as `getRuns`.
-   */
-  getExperiments: (filters: ExperimentFilters = {}) =>
-    request<Experiment[]>('/experiments', { params: { ...filters } }),
+  /** GET /api/experiments — completed evaluation executions. */
+  getExperiments: () => request<Experiment[]>('/experiments'),
   getEvalRuns: () => request<EvalRun[]>('/eval-runs'),
   getEvaluationOverview: () => request<EvaluationOverview>('/evals'),
   getExperimentGrid: (experimentId: string) =>

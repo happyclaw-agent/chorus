@@ -6,7 +6,14 @@ from fastapi.testclient import TestClient
 
 from abbrivio import AbbrivioCompletionObserver
 from abbrivio.otlp import OtlpJsonlSpanExporter, OtlpJsonlStore
-from abbrivio.sidecars import EvaluationRun, SidecarStore, utc_now
+from abbrivio.sidecars import (
+    ContentRecord,
+    EvaluationRun,
+    FeedbackEvent,
+    SidecarStore,
+    TraceRef,
+    utc_now,
+)
 from chorus.app import create_app
 
 
@@ -172,6 +179,55 @@ def test_multi_root_traces_keep_root_identity_in_runs_and_details(tmp_path):
         assert detail["spans"]["span_id"] == run["root_span_id"]
 
 
+def test_multi_root_content_and_feedback_stay_with_their_span_tree(tmp_path):
+    trace_store = OtlpJsonlStore(tmp_path / "traces.otlp.jsonl")
+    sidecars = SidecarStore(tmp_path)
+    trace_id = "11" * 16
+    root_ids = ("22" * 8, "33" * 8)
+    for root_id in root_ids:
+        AbbrivioCompletionObserver(
+            OtlpJsonlSpanExporter(trace_store),
+            resource={"service.name": f"agent-{root_id[:2]}"},
+        )(replace(Observation(), trace_id=trace_id, span_id=root_id))
+        reference = TraceRef(trace_id=trace_id, span_id=root_id)
+        sidecars.append(
+            "content",
+            ContentRecord(
+                schema_version=1,
+                content_id=f"content-{root_id[:2]}",
+                recorded_at=utc_now(),
+                trace=reference,
+                input_text=f"input-{root_id[:2]}",
+                output_text=f"output-{root_id[:2]}",
+            ).to_dict(),
+        )
+        sidecars.append(
+            "feedback",
+            FeedbackEvent(
+                schema_version=1,
+                feedback_id=f"feedback-{root_id[:2]}",
+                occurred_at=utc_now(),
+                kind="operator-score",
+                value=root_id[:2],
+                source="test",
+                trace=reference,
+            ).to_dict(),
+        )
+    client = TestClient(
+        create_app(tmp_path, trace_store=trace_store, sidecar_store=sidecars)
+    )
+
+    runs = {run["root_span_id"]: run for run in client.get("/api/runs").json()}
+
+    for root_id in root_ids:
+        assert runs[root_id]["input"] == f"input-{root_id[:2]}"
+        detail = client.get(
+            f"/api/ui/traces/{trace_id}",
+            params={"root_span_id": root_id},
+        ).json()
+        assert [score["value"] for score in detail["scores"]] == [root_id[:2]]
+
+
 def test_fallback_agent_comes_from_root_service_not_child_service(tmp_path):
     trace_store = OtlpJsonlStore(tmp_path / "traces.otlp.jsonl")
     sidecars = SidecarStore(tmp_path)
@@ -260,6 +316,21 @@ def test_invalid_agent_override_does_not_write_durable_state(tmp_path):
 
     assert response.status_code == 404
     assert sidecars.read("group_overrides") == []
+
+
+def test_quality_mutations_share_the_configured_json_body_limit(tmp_path):
+    client = TestClient(create_app(tmp_path, max_json_body_bytes=16))
+    oversized = b'{"padding":"' + (b"x" * 32) + b'"}'
+
+    for method, path in (
+        ("post", "/api/groups/example/agents"),
+        ("put", f"/api/traces/{'11' * 16}/meta"),
+        ("put", "/api/datasets/example"),
+        ("put", "/api/datasets/example/examples/case-1"),
+        ("post", "/api/corpora"),
+    ):
+        response = client.request(method, path, content=oversized)
+        assert response.status_code == 413, (method, path, response.text)
 
 
 def test_invalid_otlp_jsonl_import_is_validated_before_append(tmp_path):

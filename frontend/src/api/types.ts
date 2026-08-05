@@ -457,12 +457,6 @@ export interface RunFilters {
   limit?: number;
 }
 
-/** GET /api/experiments query params — `lookbook` returns only experiments
- * with at least one run/trace that resolved into that Lookbook (dataset). */
-export interface ExperimentFilters {
-  lookbook?: string;
-}
-
 /** A trace corpus loaded by the server: a directory or the permanent inbox. */
 export interface CorpusInfo {
   path: string;

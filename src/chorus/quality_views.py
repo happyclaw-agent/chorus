@@ -14,6 +14,7 @@ from fastapi import APIRouter, HTTPException, Query
 
 from abbrivio.otlp import OtlpJsonlStore, decode_otlp_json
 from abbrivio.sidecars import SidecarStore
+from chorus.http import JsonObject
 
 
 def _number(value: Any) -> float | None:
@@ -95,7 +96,10 @@ def _first(attributes: Mapping[str, Any], *keys: str) -> Any:
 
 
 def _trace_content(
-    records: Sequence[dict[str, Any]], trace_id: str, root_span_id: str | None
+    records: Sequence[dict[str, Any]],
+    trace_id: str,
+    root_span_id: str | None,
+    span_ids: set[str],
 ) -> tuple[str | None, str | None]:
     input_text: str | None = None
     output_text: str | None = None
@@ -105,14 +109,37 @@ def _trace_content(
             continue
         if str(reference.get("trace_id") or "").lower() != trace_id:
             continue
-        referenced_root = str(reference.get("root_span_id") or "").lower() or None
-        if root_span_id and referenced_root and referenced_root != root_span_id:
+        if not _sidecar_matches_root(
+            record,
+            root_span_id=root_span_id,
+            span_ids=span_ids,
+        ):
             continue
         if record.get("input_text") is not None:
             input_text = _message_text(record.get("input_text"))
         if record.get("output_text") is not None:
             output_text = _message_text(record.get("output_text"))
     return input_text, output_text
+
+
+def _sidecar_matches_root(
+    record: Mapping[str, Any],
+    *,
+    root_span_id: str | None,
+    span_ids: set[str],
+) -> bool:
+    reference = record.get("trace")
+    if not isinstance(reference, Mapping):
+        return False
+    referenced_root = str(reference.get("root_span_id") or "").lower() or None
+    referenced_span = str(reference.get("span_id") or "").lower() or None
+    if (
+        referenced_root is not None
+        and referenced_root != root_span_id
+        and referenced_root not in span_ids
+    ):
+        return False
+    return referenced_span is None or referenced_span in span_ids
 
 
 def _trace_meta(
@@ -221,6 +248,11 @@ class QualityView:
         }
         trace_id = str(trace.get("trace_id") or "").lower()
         root_span_id = str(trace.get("root_span_id") or "").lower() or None
+        span_ids = {
+            str(span.get("span_id") or "").lower()
+            for span in spans
+            if span.get("span_id")
+        }
         services = sorted({_service_name(span) for span in spans})
         primary_service = _service_name(_root_span(trace))
         agent_id = str(
@@ -265,7 +297,12 @@ class QualityView:
         else:
             mode = "dev"
 
-        input_text, output_text = _trace_content(content, trace_id, root_span_id)
+        input_text, output_text = _trace_content(
+            content,
+            trace_id,
+            root_span_id,
+            span_ids,
+        )
         models: set[str] = set()
         input_tokens = 0
         output_tokens = 0
@@ -490,7 +527,21 @@ class QualityView:
         run = self.run(trace_id, root_span_id)
         if trace is None or run is None:
             return None
-        feedback = self.sidecars.feedback_for_trace(trace_id.lower())
+        span_ids = {
+            str(span.get("span_id") or "").lower()
+            for span in trace.get("spans") or []
+            if span.get("span_id")
+        }
+        normalized_root = str(trace.get("root_span_id") or "").lower() or None
+        feedback = [
+            record
+            for record in self.sidecars.feedback_for_trace(trace_id.lower())
+            if _sidecar_matches_root(
+                record,
+                root_span_id=normalized_root,
+                span_ids=span_ids,
+            )
+        ]
         scores = [
             {
                 "trace_id": trace_id.lower(),
@@ -706,6 +757,9 @@ class QualityView:
                         "metadata": {
                             **(record.get("attributes") or {}),
                             "source_trace": (record.get("trace") or {}).get("trace_id"),
+                            "source_root_span": (record.get("trace") or {}).get(
+                                "root_span_id"
+                            ),
                             "source_model": record.get("source_model"),
                             "tags": record.get("tags") or [],
                         },
@@ -716,9 +770,7 @@ class QualityView:
             for name, records in sorted(grouped.items())
         ]
 
-    def experiments(self, lookbook: str | None = None) -> list[dict[str, Any]]:
-        if lookbook is not None:
-            return []
+    def experiments(self) -> list[dict[str, Any]]:
         rows = []
         for run in reversed(self.sidecars.read("eval_runs", limit=100)):
             source = run.get("source") or "evaluation"
@@ -855,7 +907,7 @@ def create_quality_router(
         return {"group_id": group_id, "hidden": True}
 
     @router.post("/groups/{group_id}/agents")
-    def add_agent(group_id: str, body: dict[str, Any]) -> dict[str, Any]:
+    def add_agent(group_id: str, body: JsonObject) -> dict[str, Any]:
         agent_id = str(body.get("agent_id") or "").strip()
         if not agent_id:
             raise HTTPException(status_code=422, detail="agent_id is required")
@@ -928,7 +980,7 @@ def create_quality_router(
 
     @router.put("/traces/{trace_id}/meta")
     def set_trace_meta(
-        trace_id: str, body: dict[str, Any], root_span_id: str | None = None
+        trace_id: str, body: JsonObject, root_span_id: str | None = None
     ) -> dict[str, Any]:
         if view.run(trace_id, root_span_id) is None:
             raise HTTPException(status_code=404, detail="trace not found")
@@ -968,7 +1020,7 @@ def create_quality_router(
         return view.datasets()
 
     @router.put("/datasets/{name}")
-    def rename_dataset(name: str, body: dict[str, Any]) -> dict[str, Any]:
+    def rename_dataset(name: str, body: JsonObject) -> dict[str, Any]:
         new_name = str(body.get("name") or "").strip()
         if not new_name:
             raise HTTPException(status_code=422, detail="name is required")
@@ -993,9 +1045,7 @@ def create_quality_router(
         return {"name": new_name, "example_count": source["example_count"]}
 
     @router.put("/datasets/{name}/examples/{example_id}")
-    def update_example(
-        name: str, example_id: str, body: dict[str, Any]
-    ) -> dict[str, Any]:
+    def update_example(name: str, example_id: str, body: JsonObject) -> dict[str, Any]:
         record = next(
             (
                 row
@@ -1045,8 +1095,8 @@ def create_quality_router(
         return {"removed": example_id, "dataset": name}
 
     @router.get("/experiments")
-    def experiments(lookbook: str | None = None) -> list[dict[str, Any]]:
-        return view.experiments(lookbook=lookbook)
+    def experiments() -> list[dict[str, Any]]:
+        return view.experiments()
 
     @router.get("/eval-runs")
     def eval_runs() -> list[dict[str, Any]]:
@@ -1119,7 +1169,7 @@ def create_quality_router(
         return view.status()["corpora"]
 
     @router.post("/corpora")
-    def import_corpus(body: dict[str, Any]) -> dict[str, Any]:
+    def import_corpus(body: JsonObject) -> dict[str, Any]:
         source = Path(str(body.get("path") or "")).expanduser().resolve()
         candidates: list[Path]
         if source.is_file():

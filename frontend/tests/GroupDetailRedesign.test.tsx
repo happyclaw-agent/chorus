@@ -1,8 +1,8 @@
 /**
  * Ticket #44 — Group Detail page: promote from any lane (drop the dead
  * "Replay locally" stub), redesign the cramped 3-column dev/ci/prod layout
- * into a single filtered wide view, and surface Related Lookbooks derived
- * from this group's member agent_ids.
+ * into a single filtered wide view, and surface related eval suites derived
+ * from source-trace lineage.
  */
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { describe, it, expect } from 'vitest';
@@ -158,8 +158,8 @@ describe('Redesigned trace view', () => {
   });
 });
 
-describe('Related Lookbooks', () => {
-  it('shows a dataset containing a Look from a group member agent', async () => {
+describe('Related eval suites', () => {
+  it('shows a dataset containing a case promoted from a group run', async () => {
     server.use(
       groupDetailHandler(),
       http.get('*/api/datasets', () =>
@@ -174,14 +174,14 @@ describe('Related Lookbooks', () => {
                 dataset: 'planning-lookbook',
                 input: 'What if spend +15%?',
                 expected: 'Grounded scenario result.',
-                metadata: { source_trace: 'abc', agent_id: 'test-agent' },
+                metadata: { source_trace: 'prod000000000001' },
               },
               {
                 example_id: 'look-002',
                 dataset: 'planning-lookbook',
                 input: 'Forecast Q4 revenue.',
                 expected: null,
-                metadata: { source_trace: 'def', agent_id: 'test-agent' },
+                metadata: { source_trace: 'another-trace' },
               },
             ],
           },
@@ -195,7 +195,7 @@ describe('Related Lookbooks', () => {
                 dataset: 'unrelated-lookbook',
                 input: 'unrelated',
                 expected: null,
-                metadata: { source_trace: 'xyz', agent_id: 'some-other-agent' },
+                metadata: { source_trace: 'xyz' },
               },
             ],
           },
@@ -213,7 +213,7 @@ describe('Related Lookbooks', () => {
     ).not.toBeInTheDocument();
   });
 
-  it('shows an empty state when no dataset has a Look from a member agent', async () => {
+  it('shows an empty state when no case came from a group run', async () => {
     server.use(groupDetailHandler(), emptyDatasetsHandler());
     renderApp('/groups/emea-planning');
 

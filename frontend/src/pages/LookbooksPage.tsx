@@ -25,7 +25,6 @@ import { AddLookDialog } from '@/components/lookbooks/AddLookDialog';
 import { EditExpectedField } from '@/components/lookbooks/EditExpectedField';
 import { RemoveLookButton } from '@/components/lookbooks/RemoveLookButton';
 import { RenameDatasetButton } from '@/components/lookbooks/RenameDatasetButton';
-import { RunsAndGatesPanel } from '@/components/lookbooks/RunsAndGatesPanel';
 import { RunExperimentDialog } from '@/components/runway/RunExperimentDialog';
 import { StatusPill } from '@/components/traces/StatusPill';
 import { Button } from '@/components/ui/button';
@@ -34,7 +33,7 @@ import { PATHS, traceDetailPath } from '@/constants/path';
 import { shortTraceId, truncate } from '@/lib/format';
 import { cn } from '@/lib/utils';
 
-/** Latest run per example_id — drives the "Last verdict" column. */
+/** Latest traced execution per example_id. Quality verdicts live in eval runs. */
 function latestRunsByExample(runs: Run[]): Map<string, Run> {
   const map = new Map<string, Run>();
   for (const run of runs) {
@@ -61,7 +60,7 @@ function metadataGraders(example: DatasetExample): string[] {
 type StatusFilter = 'all' | 'ok' | 'error';
 
 /**
- * A summary stat (Look count, passing count, failing count) that filters the
+ * A summary stat (case count, successful executions, errored executions) that filters the
  * Lookbook's own Look table in place — same accessible-button shape as
  * `DrilldownStat` (real `<button>`, `aria-label`, keyboard-operable,
  * `stopPropagation` so it doesn't also trigger the outer card's onClick), but
@@ -122,8 +121,8 @@ function DatasetCard({
   onSelectStatus: (status: StatusFilter) => void;
 }) {
   const withRuns = dataset.examples.filter(e => verdicts.has(e.example_id));
-  const failing = withRuns.filter(e => verdicts.get(e.example_id)!.status === 'error').length;
-  const passing = withRuns.length - failing;
+  const errored = withRuns.filter(e => verdicts.get(e.example_id)!.status === 'error').length;
+  const successful = withRuns.length - errored;
 
   return (
     // A div (not a <button>) so the stat counts below can be their own real,
@@ -164,16 +163,16 @@ function DatasetCard({
           cases
         </StatButton>
         <StatButton
-          label={`${passing} passing eval cases in ${dataset.name} — filter this suite`}
+          label={`${successful} cases with successful source executions in ${dataset.name} — filter this suite`}
           testId={`lookbook-pass-count-${dataset.name}`}
           active={active && statusFilter === 'ok'}
           onClick={() => onSelectStatus('ok')}
         >
-          <b className="block font-mono text-base font-semibold text-success">{passing}</b>
-          passing
+          <b className="block font-mono text-base font-semibold text-success">{successful}</b>
+          source OK
         </StatButton>
         <StatButton
-          label={`${failing} failing eval cases in ${dataset.name} — filter this suite`}
+          label={`${errored} cases with errored source executions in ${dataset.name} — filter this suite`}
           testId={`lookbook-fail-count-${dataset.name}`}
           active={active && statusFilter === 'error'}
           onClick={() => onSelectStatus('error')}
@@ -181,12 +180,12 @@ function DatasetCard({
           <b
             className={cn(
               'block font-mono text-base font-semibold',
-              failing > 0 ? 'text-destructive' : 'text-foreground'
+              errored > 0 ? 'text-destructive' : 'text-foreground'
             )}
           >
-            {failing}
+            {errored}
           </b>
-          failing
+          source errors
         </StatButton>
       </div>
     </div>
@@ -268,7 +267,7 @@ function ExampleRow({
         <td className="px-3 py-2">
           {lastRun ? (
             <Link
-              to={traceDetailPath(lastRun.trace_id)}
+              to={traceDetailPath(lastRun.trace_id, lastRun.root_span_id)}
               onClick={event => event.stopPropagation()}
               className="inline-flex"
               title={`Latest run ${shortTraceId(lastRun.trace_id)} (${lastRun.agent_version ?? '—'})`}
@@ -395,7 +394,7 @@ function EvalCatalog({
                   >
                     <td className="px-4 py-2.5 font-medium">{definition.name}</td>
                     <td className="px-3 py-2.5 text-muted-foreground">
-                      {(definition.group ?? '—').replaceAll('_', ' ')}
+                      {(definition.group ?? '—').split('_').join(' ')}
                     </td>
                     <td className="px-3 py-2.5 text-right font-mono">
                       {metric ? `${Number(metric.passed ?? 0)}/${Number(metric.total ?? 0)}` : '—'}
@@ -453,7 +452,7 @@ export function EvalsPage() {
 
   const verdicts = useMemo(() => latestRunsByExample(runsQuery.data ?? []), [runsQuery.data]);
 
-  // Clicking a dataset's "passing"/"failing" stat filters this Lookbook's own
+  // Clicking a dataset's source-execution status filters this suite's own
   // Look table in place (rather than navigating to Traces, which has no
   // trace_ids/example_id filter primitive — see the comment on DatasetCard's
   // predecessor in git history). Clicking the already-active filter again, or
@@ -565,7 +564,8 @@ export function EvalsPage() {
               </div>
               {displayedExamples.length === 0 && statusFilter !== 'all' ? (
                 <div className="px-4 py-6 text-sm text-muted-foreground">
-                  No {statusFilter === 'ok' ? 'passing' : 'failing'} cases in this eval suite.
+                  No cases with a {statusFilter === 'ok' ? 'successful' : 'failed'} source execution
+                  in this eval suite.
                 </div>
               ) : (
                 <div className="overflow-x-auto">
@@ -583,7 +583,7 @@ export function EvalsPage() {
                         </th>
                         <th className="border-b border-border px-3 py-2 font-semibold">Graders</th>
                         <th className="border-b border-border px-3 py-2 font-semibold">
-                          Last verdict
+                          Source execution
                         </th>
                         <th className="border-b border-border px-3 py-2 text-right font-semibold">
                           Actions
@@ -614,7 +614,6 @@ export function EvalsPage() {
                   Run eval…
                 </Button>
               </div>
-              <RunsAndGatesPanel datasetName={selected.name} />
               <RunExperimentDialog
                 open={runExperimentOpen}
                 onOpenChange={setRunExperimentOpen}

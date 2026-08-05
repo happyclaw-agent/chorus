@@ -278,7 +278,7 @@ describe('Lookbooks in-place status filter', () => {
     expect(await screen.findByText('P1 input')).toBeInTheDocument();
     fireEvent.click(screen.getByTestId('lookbook-fail-count-all-passing'));
 
-    expect(await screen.findByText(/No failing cases/i)).toBeInTheDocument();
+    expect(await screen.findByText(/No cases with a failed source execution/i)).toBeInTheDocument();
     expect(screen.queryByText('P1 input')).not.toBeInTheDocument();
   });
 });
