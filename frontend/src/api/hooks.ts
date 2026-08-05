@@ -25,6 +25,15 @@ export function useRuns(filters: RunFilters = {}) {
   });
 }
 
+/** Fetch every matching run page for views whose calculations are corpus-wide. */
+export function useAllRuns(filters: RunFilters = {}) {
+  return useQuery({
+    queryKey: ['all-runs', filters],
+    queryFn: () => api.getAllRuns(filters),
+    refetchInterval: LIVE_REFETCH_MS,
+  });
+}
+
 export function useRunCount(filters: RunFilters = {}) {
   return useQuery({
     queryKey: ['run-count', filters],

@@ -878,6 +878,11 @@ class QualityView:
             model = run.get("model") or "model"
             passed = run.get("passed", 0)
             total = run.get("total", 0)
+            evaluated_models = (run.get("raw_summary") or {}).get(
+                "evaluated_output_models", []
+            )
+            if not isinstance(evaluated_models, list):
+                evaluated_models = []
             rows.append(
                 {
                     "experiment_id": run.get("run_id"),
@@ -892,9 +897,7 @@ class QualityView:
                     "failed": int(run.get("failed") or 0),
                     "total": int(total or 0),
                     "metrics": run.get("metrics") or {},
-                    "evaluated_models": (run.get("raw_summary") or {}).get(
-                        "evaluated_output_models", []
-                    ),
+                    "evaluated_models": [str(model) for model in evaluated_models],
                     "baseline": None,
                     "candidate": None,
                     "trace_ids": [],

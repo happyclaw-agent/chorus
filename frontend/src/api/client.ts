@@ -135,6 +135,18 @@ async function request<T>(
 
 export const api = {
   getRuns: (filters: RunFilters = {}) => request<Run[]>('/runs', { params: { ...filters } }),
+  getAllRuns: async (filters: RunFilters = {}) => {
+    const pageSize = 1000;
+    const rows: Run[] = [];
+    const { offset: _offset, limit: _limit, ...corpusFilters } = filters;
+    while (true) {
+      const page = await request<Run[]>('/runs', {
+        params: { ...corpusFilters, offset: rows.length, limit: pageSize },
+      });
+      rows.push(...page);
+      if (page.length < pageSize) return rows;
+    }
+  },
   getRunCount: (filters: RunFilters = {}) =>
     request<RunCount>('/run-count', {
       params: { ...filters, limit: undefined, offset: undefined },

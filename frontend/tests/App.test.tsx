@@ -89,3 +89,25 @@ describe('Protected Chorus sessions', () => {
     window.sessionStorage.removeItem('chorus.apiToken');
   });
 });
+
+describe('Corpus-wide run loading', () => {
+  it('retrieves every backend page instead of stopping at the newest 500 runs', async () => {
+    const offsets: number[] = [];
+    server.use(
+      http.get('*/api/runs', ({ request }) => {
+        const params = new URL(request.url).searchParams;
+        const offset = Number(params.get('offset') ?? 0);
+        offsets.push(offset);
+        const count = offset === 0 ? 1000 : 1;
+        return HttpResponse.json(
+          Array.from({ length: count }, (_, index) => ({
+            trace_id: `trace-${offset + index}`,
+          }))
+        );
+      })
+    );
+
+    await expect(api.getAllRuns()).resolves.toHaveLength(1001);
+    expect(offsets).toEqual([0, 1000]);
+  });
+});

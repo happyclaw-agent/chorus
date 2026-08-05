@@ -11,7 +11,7 @@ import {
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
-import { useDatasets, useEvaluationOverview, useEvalRuns, useRuns } from '@/api/hooks';
+import { useAllRuns, useDatasets, useEvaluationOverview, useEvalRuns } from '@/api/hooks';
 import type {
   Dataset,
   DatasetExample,
@@ -458,7 +458,7 @@ export function EvalsPage() {
   const evaluationQuery = useEvaluationOverview();
   const evalRunsQuery = useEvalRuns();
   const datasetsQuery = useDatasets();
-  const runsQuery = useRuns({ limit: 500 });
+  const runsQuery = useAllRuns();
   const [selectedName, setSelectedName] = useState<string>('');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [addLookOpen, setAddLookOpen] = useState(false);

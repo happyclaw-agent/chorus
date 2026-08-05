@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 
-import { useRuns, useStats } from '@/api/hooks';
+import { useAllRuns, useStats } from '@/api/hooks';
 import type { Run } from '@/api/types';
 import { PageHeader } from '@/components/layout/PageHeader';
 import {
@@ -90,7 +90,7 @@ const PERCENTILE_CLASSES = ['bg-chart-1/40', 'bg-chart-1/70', 'bg-chart-1'];
 
 export function MonitorPage() {
   const statsQuery = useStats();
-  const runsQuery = useRuns({ limit: 500 });
+  const runsQuery = useAllRuns();
 
   const buckets = useMemo(() => bucketRuns(runsQuery.data ?? []), [runsQuery.data]);
 

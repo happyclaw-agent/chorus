@@ -1,10 +1,10 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Plus } from 'lucide-react';
 
 import { useQueryClient } from '@tanstack/react-query';
 
 import { api, ApiError } from '@/api/client';
-import { useRuns } from '@/api/hooks';
+import { useRunCount, useRuns } from '@/api/hooks';
 import type { Run, RunStatus } from '@/api/types';
 import { Button } from '@/components/ui/button';
 import {
@@ -51,11 +51,19 @@ export function AddLookDialog({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<{ count: number } | null>(null);
+  const [offset, setOffset] = useState(0);
+  const pageSize = 100;
+  const filters = {
+    status: (status || undefined) as RunStatus | undefined,
+    search: search || undefined,
+  };
 
   const runsQuery = useRuns({
-    status: (status || undefined) as RunStatus | undefined,
-    limit: 500,
+    ...filters,
+    offset,
+    limit: pageSize,
   });
+  const countQuery = useRunCount(filters);
 
   // Reset the form each time the dialog (re)opens.
   useEffect(() => {
@@ -66,20 +74,12 @@ export function AddLookDialog({
       setSubmitting(false);
       setError(null);
       setResult(null);
+      setOffset(0);
     }
   }, [open]);
 
-  const rows = useMemo(() => {
-    const runs = runsQuery.data ?? [];
-    const needle = search.trim().toLowerCase();
-    if (!needle) return runs;
-    return runs.filter(
-      run =>
-        run.trace_id.toLowerCase().includes(needle) ||
-        (run.input ?? '').toLowerCase().includes(needle) ||
-        (run.output ?? '').toLowerCase().includes(needle)
-    );
-  }, [runsQuery.data, search]);
+  const rows = runsQuery.data ?? [];
+  const total = countQuery.data?.count ?? 0;
 
   const runKey = (run: Run) => `${run.trace_id}:${run.root_span_id ?? ''}`;
   const allSelected = rows.length > 0 && rows.every(run => selected.has(runKey(run)));
@@ -184,6 +184,7 @@ export function AddLookDialog({
                 value={status}
                 onChange={event => {
                   setStatus(event.target.value);
+                  setOffset(0);
                   setSelected(new Set());
                 }}
               />
@@ -192,15 +193,49 @@ export function AddLookDialog({
                 value={search}
                 onChange={event => {
                   setSearch(event.target.value);
+                  setOffset(0);
                   setSelected(new Set());
                 }}
                 placeholder="Filter by input, output, or trace id…"
                 className="h-8 max-w-72 text-xs"
               />
               <span className="ml-auto text-xs text-muted-foreground">
-                {runsQuery.isLoading ? 'Loading…' : `${rows.length} traces`}
+                {runsQuery.isLoading || countQuery.isLoading
+                  ? 'Loading…'
+                  : total === 0
+                    ? '0 traces'
+                    : `${offset + 1}–${offset + rows.length} of ${total} traces`}
               </span>
             </div>
+
+            {total > pageSize ? (
+              <div className="flex items-center justify-end gap-2">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  disabled={offset === 0}
+                  onClick={() => {
+                    setOffset(Math.max(0, offset - pageSize));
+                    setSelected(new Set());
+                  }}
+                  data-testid="add-look-newer"
+                >
+                  Newer
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  disabled={offset + rows.length >= total}
+                  onClick={() => {
+                    setOffset(offset + pageSize);
+                    setSelected(new Set());
+                  }}
+                  data-testid="add-look-older"
+                >
+                  Older
+                </Button>
+              </div>
+            ) : null}
 
             <div className="max-h-72 overflow-y-auto rounded-md border border-border">
               {runsQuery.isLoading ? (

@@ -129,9 +129,21 @@ describe('Add Look — from the Lookbooks page', () => {
   it('filters the trace picker by search text and by status, same filtering conventions as Traces', async () => {
     server.use(
       http.get('*/api/runs', ({ request }) => {
-        const status = new URL(request.url).searchParams.get('status');
-        const runs = threeRuns();
-        return HttpResponse.json(status ? runs.filter(r => r.status === status) : runs);
+        const params = new URL(request.url).searchParams;
+        const status = params.get('status');
+        const search = params.get('search')?.toLowerCase();
+        let runs = threeRuns();
+        if (status) runs = runs.filter(r => r.status === status);
+        if (search) {
+          runs = runs.filter(r =>
+            [r.trace_id, r.input, r.output].some(value =>
+              String(value ?? '')
+                .toLowerCase()
+                .includes(search)
+            )
+          );
+        }
+        return HttpResponse.json(runs);
       })
     );
     renderApp();
@@ -147,8 +159,8 @@ describe('Add Look — from the Lookbooks page', () => {
     fireEvent.change(within(dialog).getByTestId('add-look-search'), {
       target: { value: 'Second' },
     });
+    expect(await within(dialog).findByText('Second run input')).toBeInTheDocument();
     expect(within(dialog).queryByText('First run input')).not.toBeInTheDocument();
-    expect(within(dialog).getByText('Second run input')).toBeInTheDocument();
     expect(within(dialog).queryByText('Third run input')).not.toBeInTheDocument();
 
     // Clear the search, then filter by status instead. The status filter is
@@ -161,6 +173,37 @@ describe('Add Look — from the Lookbooks page', () => {
     expect(await within(dialog).findByText('Second run input')).toBeInTheDocument();
     expect(within(dialog).queryByText('First run input')).not.toBeInTheDocument();
     expect(within(dialog).queryByText('Third run input')).not.toBeInTheDocument();
+  });
+
+  it('can page to and select traces older than the first result page', async () => {
+    server.use(
+      http.get('*/api/run-count', () => HttpResponse.json({ count: 101 })),
+      http.get('*/api/runs', ({ request }) => {
+        const offset = Number(new URL(request.url).searchParams.get('offset') ?? 0);
+        return HttpResponse.json(
+          offset === 100
+            ? [run({ trace_id: 'trace-older-than-page', input: 'Older searchable input' })]
+            : [run({ trace_id: 'trace-newest-page', input: 'Newest page input' })]
+        );
+      })
+    );
+    const calls = trackPromotes();
+    renderApp();
+
+    expect(await screen.findByText('planning-lookbook')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('lookbooks-add-look-button'));
+    const dialog = await screen.findByRole('dialog');
+
+    expect(await within(dialog).findByText('Newest page input')).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByTestId('add-look-older'));
+    expect(await within(dialog).findByText('Older searchable input')).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByTestId('add-look-select-trace-older-than-page'));
+    fireEvent.click(within(dialog).getByTestId('add-look-save'));
+
+    await waitFor(() => expect(screen.getByTestId('add-look-success')).toBeInTheDocument());
+    expect(calls).toEqual([
+      { traceId: 'trace-older-than-page', dataset: 'planning-lookbook' },
+    ]);
   });
 
   it('clears hidden selections when filters change so the saved count stays honest', async () => {
@@ -178,7 +221,9 @@ describe('Add Look — from the Lookbooks page', () => {
       target: { value: 'Second' },
     });
     expect(within(dialog).getByText('0 selected')).toBeInTheDocument();
-    fireEvent.click(within(dialog).getByTestId('add-look-select-trace-0000000000002'));
+    fireEvent.click(
+      await within(dialog).findByTestId('add-look-select-trace-0000000000002')
+    );
     fireEvent.click(within(dialog).getByTestId('add-look-save'));
 
     await waitFor(() => expect(screen.getByTestId('add-look-success')).toBeInTheDocument());

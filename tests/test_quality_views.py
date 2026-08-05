@@ -459,6 +459,20 @@ def test_eval_runs_appear_as_aggregate_reports_not_model_matrices(tmp_path):
     assert matrix.status_code == 404
 
 
+def test_eval_run_normalizes_nullable_evaluated_models(tmp_path):
+    client, sidecars, _reference = _client_with_trace(tmp_path)
+    sidecars.append(
+        "eval_runs",
+        {
+            "run_id": "nullable-models",
+            "source": "generic",
+            "raw_summary": {"evaluated_output_models": None},
+        },
+    )
+
+    assert client.get("/api/eval-runs").json()[0]["evaluated_models"] == []
+
+
 def test_invalid_agent_override_does_not_write_durable_state(tmp_path):
     client, sidecars, _reference = _client_with_trace(tmp_path)
 
