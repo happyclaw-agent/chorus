@@ -250,9 +250,25 @@ def _append_evaluation_results(
     store: SidecarStore,
     prepared: Iterable[tuple[dict[str, Any], dict[str, Any]]],
 ) -> list[dict[str, Any]]:
+    existing_cases: set[tuple[str, str]] = set()
+    for existing in store.read("eval_cases"):
+        attributes = existing.get("attributes") or {}
+        existing_cases.add(
+            (
+                str(attributes.get("dataset") or "promoted-traces"),
+                str(existing.get("case_id") or ""),
+            )
+        )
     persisted: list[dict[str, Any]] = []
     for case_record, record in prepared:
-        store.append("eval_cases", case_record)
+        attributes = case_record.get("attributes") or {}
+        case_key = (
+            str(attributes.get("dataset") or "promoted-traces"),
+            str(case_record.get("case_id") or ""),
+        )
+        if case_key not in existing_cases:
+            store.append("eval_cases", case_record)
+            existing_cases.add(case_key)
         store.append("eval_results", record)
         persisted.append(record)
     return persisted

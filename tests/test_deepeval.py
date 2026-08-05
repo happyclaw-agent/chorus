@@ -221,3 +221,28 @@ def test_separate_result_exports_do_not_reuse_generated_ids(tmp_path):
         "example-1",
         "example-2",
     }
+
+
+def test_new_run_does_not_overwrite_curated_dataset_example(tmp_path):
+    store = SidecarStore(tmp_path)
+    original = {
+        "example_id": "example-1",
+        "inputs": {"message": "hello"},
+        "reference_outputs": {"answer": "original"},
+    }
+    export_evaluation_results(store, "run-1", [original], dataset="flex-quality")
+    curated = load_evaluation_cases(store)[0]
+    store.append(
+        "eval_cases",
+        {
+            **curated,
+            "reference_outputs": {"answer": "human-reviewed"},
+            "expected_output": "human-reviewed",
+        },
+    )
+
+    export_evaluation_results(store, "run-2", [original], dataset="flex-quality")
+
+    final = load_evaluation_cases(store)[0]
+    assert final["reference_outputs"] == {"answer": "human-reviewed"}
+    assert final["expected_output"] == "human-reviewed"
