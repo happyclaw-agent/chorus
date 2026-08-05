@@ -28,6 +28,13 @@ import { RenameDatasetButton } from '@/components/lookbooks/RenameDatasetButton'
 import { RunExperimentDialog } from '@/components/runway/RunExperimentDialog';
 import { StatusPill } from '@/components/traces/StatusPill';
 import { Button } from '@/components/ui/button';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import { Skeleton } from '@/components/ui/skeleton';
 import { PATHS, traceDetailPath } from '@/constants/path';
 import { shortTraceId, truncate } from '@/lib/format';
@@ -345,6 +352,7 @@ function EvalCatalog({
   definitions: EvalDefinition[];
   latestRun: EvalRun | undefined;
 }) {
+  const [selectedDefinition, setSelectedDefinition] = useState<EvalDefinition | null>(null);
   const rows = [...definitions].sort(
     (left, right) =>
       (left.group ?? '').localeCompare(right.group ?? '') || left.name.localeCompare(right.name)
@@ -357,100 +365,162 @@ function EvalCatalog({
   }).length;
 
   return (
-    <div className="mb-5 overflow-hidden rounded-lg border border-border bg-card">
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
-        <div>
-          <h2 className="text-sm font-semibold">Registered evals</h2>
-          <p className="mt-0.5 text-xs text-muted-foreground">
-            {rows.length} evaluator definitions
-            {latestRun ? ` · ${exercised} exercised by the latest run` : ''}
-          </p>
-        </div>
-        <div className="flex items-center gap-3 text-xs">
-          {latestRun ? (
+    <>
+      <Dialog
+        open={selectedDefinition !== null}
+        onOpenChange={open => !open && setSelectedDefinition(null)}
+      >
+        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-3xl">
+          {selectedDefinition ? (
             <>
-              <span className="font-mono text-success">{exercised - attention} passing</span>
-              <span
-                className={cn(
-                  'font-mono',
-                  attention ? 'text-destructive' : 'text-muted-foreground'
-                )}
-              >
-                {attention} need attention
-              </span>
-              <Button size="sm" variant="secondary" asChild>
-                <Link to={PATHS.RUNS}>View latest run</Link>
-              </Button>
+              <DialogHeader>
+                <DialogTitle>{selectedDefinition.name}</DialogTitle>
+                <DialogDescription>
+                  Evaluator setup and the resources it is attached to.
+                </DialogDescription>
+              </DialogHeader>
+              <div className="grid gap-2 sm:grid-cols-2">
+                {[
+                  ['Group', selectedDefinition.group ?? '—'],
+                  ['Type', String(selectedDefinition.type ?? 'custom')],
+                  ['Runner', selectedDefinition.runner ?? '—'],
+                  ['Source', selectedDefinition.source ?? '—'],
+                  ['Dataset', String(selectedDefinition.dataset ?? '—')],
+                  ['Threshold', String(selectedDefinition.threshold ?? '—')],
+                ].map(([label, value]) => (
+                  <div key={label} className="rounded-md border border-border bg-card px-3 py-2.5">
+                    <div className="text-[9px] font-semibold tracking-wider text-muted-foreground uppercase">
+                      {label}
+                    </div>
+                    <div className="mt-1 font-mono text-xs">{value}</div>
+                  </div>
+                ))}
+              </div>
+              {selectedDefinition.description ? (
+                <div>
+                  <div className="mb-1 text-[10px] font-semibold tracking-wider text-muted-foreground uppercase">
+                    Description
+                  </div>
+                  <p className="rounded-md border border-border bg-card p-3 text-sm">
+                    {String(selectedDefinition.description)}
+                  </p>
+                </div>
+              ) : null}
+              <div>
+                <div className="mb-1 text-[10px] font-semibold tracking-wider text-muted-foreground uppercase">
+                  Complete configuration
+                </div>
+                <pre className="max-h-80 overflow-auto rounded-md border border-border bg-card p-3 font-mono text-[11px] whitespace-pre-wrap">
+                  {JSON.stringify(selectedDefinition, null, 2)}
+                </pre>
+              </div>
+              {latestRun ? (
+                <Button size="sm" variant="secondary" asChild>
+                  <Link to={PATHS.RUNS}>Open latest experiment</Link>
+                </Button>
+              ) : null}
             </>
           ) : null}
+        </DialogContent>
+      </Dialog>
+      <div className="mb-5 overflow-hidden rounded-lg border border-border bg-card">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
+          <div>
+            <h2 className="text-sm font-semibold">Registered evals</h2>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              {rows.length} evaluator definitions
+              {latestRun ? ` · ${exercised} exercised by the latest run` : ''}
+            </p>
+          </div>
+          <div className="flex items-center gap-3 text-xs">
+            {latestRun ? (
+              <>
+                <span className="font-mono text-success">{exercised - attention} passing</span>
+                <span
+                  className={cn(
+                    'font-mono',
+                    attention ? 'text-destructive' : 'text-muted-foreground'
+                  )}
+                >
+                  {attention} need attention
+                </span>
+                <Button size="sm" variant="secondary" asChild>
+                  <Link to={PATHS.RUNS}>View latest run</Link>
+                </Button>
+              </>
+            ) : null}
+          </div>
         </div>
+        {rows.length === 0 ? (
+          <div className="px-4 py-6 text-sm text-muted-foreground">
+            No evaluator definitions are registered with this Chorus server.
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[700px] text-xs">
+              <thead>
+                <tr className="text-left text-[10px] font-semibold tracking-wider text-muted-foreground uppercase">
+                  <th className="border-b border-border px-4 py-2.5">Eval</th>
+                  <th className="border-b border-border px-3 py-2.5">Group</th>
+                  <th className="border-b border-border px-3 py-2.5 text-right">Examples</th>
+                  <th className="border-b border-border px-3 py-2.5 text-right">Score</th>
+                  <th className="border-b border-border px-3 py-2.5">Latest result</th>
+                  <th className="border-b border-border px-4 py-2.5">Runner</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map(definition => {
+                  const metric = latestMetrics[definition.name];
+                  const passed = metric ? evalPassed(metric) : false;
+                  return (
+                    <tr
+                      key={definition.name}
+                      className="cursor-pointer border-b border-border last:border-b-0 hover:bg-muted/30"
+                      onClick={() => setSelectedDefinition(definition)}
+                    >
+                      <td className="px-4 py-2.5 font-medium">{definition.name}</td>
+                      <td className="px-3 py-2.5 text-muted-foreground">
+                        {(definition.group ?? '—').split('_').join(' ')}
+                      </td>
+                      <td className="px-3 py-2.5 text-right font-mono">
+                        {metric
+                          ? `${Number(metric.passed ?? 0)}/${Number(metric.total ?? 0)}`
+                          : '—'}
+                      </td>
+                      <td className="px-3 py-2.5 text-right font-mono">
+                        {metric ? evalScore(metric) : '—'}
+                      </td>
+                      <td className="px-3 py-2.5">
+                        {metric ? (
+                          <span
+                            className={cn(
+                              'inline-flex items-center gap-1.5 font-medium',
+                              passed ? 'text-success' : 'text-destructive'
+                            )}
+                          >
+                            {passed ? (
+                              <CircleCheck className="size-3.5" />
+                            ) : (
+                              <CircleX className="size-3.5" />
+                            )}
+                            {passed ? 'Passed' : 'Failed'}
+                          </span>
+                        ) : (
+                          <span className="text-muted-foreground">Not in latest run</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-2.5 font-mono text-[11px] text-muted-foreground">
+                        {definition.runner ?? definition.source ?? '—'}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
-      {rows.length === 0 ? (
-        <div className="px-4 py-6 text-sm text-muted-foreground">
-          No evaluator definitions are registered with this Chorus server.
-        </div>
-      ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[700px] text-xs">
-            <thead>
-              <tr className="text-left text-[10px] font-semibold tracking-wider text-muted-foreground uppercase">
-                <th className="border-b border-border px-4 py-2.5">Eval</th>
-                <th className="border-b border-border px-3 py-2.5">Group</th>
-                <th className="border-b border-border px-3 py-2.5 text-right">Checks</th>
-                <th className="border-b border-border px-3 py-2.5 text-right">Score</th>
-                <th className="border-b border-border px-3 py-2.5">Latest result</th>
-                <th className="border-b border-border px-4 py-2.5">Runner</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map(definition => {
-                const metric = latestMetrics[definition.name];
-                const passed = metric ? evalPassed(metric) : false;
-                return (
-                  <tr
-                    key={definition.name}
-                    className="border-b border-border last:border-b-0 hover:bg-muted/30"
-                  >
-                    <td className="px-4 py-2.5 font-medium">{definition.name}</td>
-                    <td className="px-3 py-2.5 text-muted-foreground">
-                      {(definition.group ?? '—').split('_').join(' ')}
-                    </td>
-                    <td className="px-3 py-2.5 text-right font-mono">
-                      {metric ? `${Number(metric.passed ?? 0)}/${Number(metric.total ?? 0)}` : '—'}
-                    </td>
-                    <td className="px-3 py-2.5 text-right font-mono">
-                      {metric ? evalScore(metric) : '—'}
-                    </td>
-                    <td className="px-3 py-2.5">
-                      {metric ? (
-                        <span
-                          className={cn(
-                            'inline-flex items-center gap-1.5 font-medium',
-                            passed ? 'text-success' : 'text-destructive'
-                          )}
-                        >
-                          {passed ? (
-                            <CircleCheck className="size-3.5" />
-                          ) : (
-                            <CircleX className="size-3.5" />
-                          )}
-                          {passed ? 'Passed' : 'Failed'}
-                        </span>
-                      ) : (
-                        <span className="text-muted-foreground">Not in latest run</span>
-                      )}
-                    </td>
-                    <td className="px-4 py-2.5 font-mono text-[11px] text-muted-foreground">
-                      {definition.runner ?? definition.source ?? '—'}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </div>
+    </>
   );
 }
 

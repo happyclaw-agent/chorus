@@ -7,11 +7,17 @@ from abbrivio.capture import (
     trace_id_for_interaction,
 )
 from abbrivio.cost import CostEstimate, ModelPrice, PriceCatalog
-from abbrivio.deepeval import export_deepeval_summary, load_evaluation_cases
+from abbrivio.deepeval import (
+    export_deepeval_summary,
+    export_evaluation_results,
+    load_evaluation_cases,
+    load_evaluation_results,
+)
 from abbrivio.sidecars import (
     MAX_SIDECAR_READ_LIMIT,
     ContentRecord,
     EvaluationCase,
+    EvaluationResult,
     EvaluationRun,
     FeedbackEvent,
     HttpSidecarClient,
@@ -31,6 +37,7 @@ __all__ = [
     "ContentRecord",
     "CostEstimate",
     "EvaluationCase",
+    "EvaluationResult",
     "EvaluationRun",
     "ExportedSpanRef",
     "FeedbackEvent",
@@ -44,7 +51,9 @@ __all__ = [
     "SpanIdentity",
     "TraceRef",
     "export_deepeval_summary",
+    "export_evaluation_results",
     "load_evaluation_cases",
+    "load_evaluation_results",
     "trace_id_for_interaction",
     "utc_now",
     "__version__",

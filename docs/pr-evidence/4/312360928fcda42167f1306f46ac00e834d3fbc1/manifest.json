@@ -1,0 +1,34 @@
+{
+  "manifestVersion": 1,
+  "generatedAt": "2026-08-05T16:10:51.418483Z",
+  "repository": "git@github.com:happyclaw-agent/chorus.git",
+  "prUrl": "https://github.com/happyclaw-agent/chorus/pull/4",
+  "demoedCommit": "312360928fcda42167f1306f46ac00e834d3fbc1",
+  "kind": "browser",
+  "claims": [
+    "Runs displays all 186 persisted DeepEval example results with failures first",
+    "A failed example drills into input, output, reference, evaluator feedback, tokens, cost, latency, and its canonical OTLP trace",
+    "The linked logical execution opens only its relevant span waterfall and sidecars",
+    "Evals exposes 27 evaluator definitions and complete setup"
+  ],
+  "launchCommands": [
+    "uv run chorus --data-dir <isolated-local-chorus-data> --host 127.0.0.1 --port 8010"
+  ],
+  "demoCommands": [
+    "record_browser_demo.cjs --url http://127.0.0.1:8010/runs --steps <steps.json>"
+  ],
+  "isolation": "Real local Chorus server over a local-source golden DeepEval corpus; no production DynamoDB reads, no SMS delivery, and no customer identity or secrets in the recording.",
+  "limitations": [
+    "Production-trace promotion into a dataset is not exercised; this PR completes the DeepEval dataset and experiment path first."
+  ],
+  "artifacts": [
+    {
+      "path": "/private/tmp/chorus-pr4-3123609.dNoqFR/chorus-eval-drilldown.webm",
+      "name": "chorus-eval-drilldown.webm",
+      "bytes": 1025117,
+      "sha256": "76bf19217be771f89e08d13023490a272d029389c5f6c01892f4db8aa8b394c5",
+      "mimeType": "video/webm",
+      "durationSeconds": 8.4
+    }
+  ]
+}

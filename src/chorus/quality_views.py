@@ -148,7 +148,11 @@ def _sidecar_matches_root(
         and referenced_root not in span_ids
     ):
         return False
-    return referenced_span is None or referenced_span in span_ids
+    return (
+        referenced_span is None
+        or referenced_span == root_span_id
+        or referenced_span in span_ids
+    )
 
 
 def _trace_meta(
@@ -524,7 +528,16 @@ class QualityView:
     ) -> dict[str, Any] | None:
         normalized = trace_id.lower()
         normalized_root = root_span_id.lower() if root_span_id else None
-        return next(
+        if normalized_root is None:
+            trace = self.traces.get_trace(normalized)
+            if trace is None:
+                return None
+            return self._run(
+                trace,
+                self.sidecars.read("content"),
+                _trace_meta(self.sidecars.read("trace_meta")),
+            )
+        exact = next(
             (
                 row
                 for row in self._runs()
@@ -536,13 +549,25 @@ class QualityView:
             ),
             None,
         )
+        if exact is not None:
+            return exact
+        trace = self.trace_view(normalized, normalized_root)
+        if trace is None:
+            return None
+        return self._run(
+            trace,
+            self.sidecars.read("content"),
+            _trace_meta(self.sidecars.read("trace_meta")),
+        )
 
     def trace_view(
         self, trace_id: str, root_span_id: str | None = None
     ) -> dict[str, Any] | None:
         normalized = trace_id.lower()
         normalized_root = root_span_id.lower() if root_span_id else None
-        return next(
+        if normalized_root is None:
+            return self.traces.get_trace(normalized)
+        exact = next(
             (
                 trace
                 for trace in self.traces.trace_views()
@@ -554,6 +579,43 @@ class QualityView:
             ),
             None,
         )
+        if exact is not None:
+            return exact
+        logical_views: list[dict[str, Any]] = []
+        for trace in self.traces.trace_views():
+            if str(trace.get("trace_id") or "").lower() != normalized:
+                continue
+            root_id = str(trace.get("root_span_id") or "").lower()
+            root_span = next(
+                (
+                    span
+                    for span in trace.get("spans") or []
+                    if str(span.get("span_id") or "").lower() == root_id
+                ),
+                None,
+            )
+            if (
+                root_span is not None
+                and str(root_span.get("parent_span_id") or "").lower()
+                == normalized_root
+            ):
+                logical_views.append(trace)
+        if not logical_views:
+            return None
+        start = min(
+            int(trace.get("start_time_unix_nano") or 0) for trace in logical_views
+        )
+        end = max(int(trace.get("end_time_unix_nano") or 0) for trace in logical_views)
+        return {
+            **logical_views[0],
+            "root_span_id": normalized_root,
+            "start_time_unix_nano": start,
+            "end_time_unix_nano": end,
+            "latency_ms": (end - start) / 1_000_000,
+            "spans": [
+                span for trace in logical_views for span in trace.get("spans") or []
+            ],
+        }
 
     @staticmethod
     def span_tree(trace: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -617,6 +679,12 @@ class QualityView:
             if span.get("span_id")
         }
         normalized_root = str(trace.get("root_span_id") or "").lower() or None
+        if normalized_root is None:
+            span_ids.update(
+                str(span.get("parent_span_id") or "").lower()
+                for span in trace.get("spans") or []
+                if span.get("parent_span_id")
+            )
         feedback = [
             record
             for record in self.sidecars.feedback_for_trace(trace_id.lower())
@@ -887,8 +955,26 @@ class QualityView:
         ]
 
     def experiments(self) -> list[dict[str, Any]]:
+        result_rows = self.sidecars.read("eval_results")
+        latest_results: dict[tuple[str, str], dict[str, Any]] = {}
+        unversioned_results: list[dict[str, Any]] = []
+        for result in result_rows:
+            run_id = str(result.get("run_id") or "")
+            result_id = str(result.get("result_id") or "")
+            if not run_id:
+                continue
+            if result_id:
+                latest_results[(run_id, result_id)] = result
+            else:
+                unversioned_results.append(result)
+        results_by_run: defaultdict[str, list[dict[str, Any]]] = defaultdict(list)
+        for result in [*latest_results.values(), *unversioned_results]:
+            run_id = str(result.get("run_id") or "")
+            results_by_run[run_id].append(result)
         rows = []
         for run in reversed(self.sidecars.read("eval_runs")):
+            run_id = str(run.get("run_id") or "")
+            run_results = results_by_run.get(run_id, [])
             source = run.get("source") or "evaluation"
             model = run.get("model") or "model"
             passed = run.get("passed", 0)
@@ -900,10 +986,10 @@ class QualityView:
                 evaluated_models = []
             rows.append(
                 {
-                    "experiment_id": run.get("run_id"),
+                    "experiment_id": run_id,
                     "name": f"{source} · {model}",
                     "description": f"{passed}/{total} passed",
-                    "kind": "aggregate",
+                    "kind": "experiment" if run_results else "aggregate",
                     "created_at": run.get("created_at"),
                     "source": source,
                     "model": model,
@@ -912,11 +998,153 @@ class QualityView:
                     "failed": int(run.get("failed") or 0),
                     "total": int(total or 0),
                     "metrics": run.get("metrics") or {},
+                    "dataset": run.get("dataset"),
+                    "result_count": len(run_results),
                     "evaluated_models": [str(model) for model in evaluated_models],
                     "baseline": None,
                     "candidate": None,
-                    "trace_ids": [],
-                    "run_count": int(run.get("total") or 0),
+                    "trace_ids": sorted(
+                        {
+                            str((result.get("trace") or {}).get("trace_id") or "")
+                            for result in run_results
+                            if (result.get("trace") or {}).get("trace_id")
+                        }
+                    ),
+                    "run_count": len(run_results),
+                }
+            )
+        return rows
+
+    def experiment_results(self, experiment_id: str) -> list[dict[str, Any]]:
+        """Join example results to their canonical OTLP execution metrics."""
+        latest: dict[str, dict[str, Any]] = {}
+        for record in self.sidecars.read("eval_results"):
+            if str(record.get("run_id") or "") != experiment_id:
+                continue
+            result_id = str(record.get("result_id") or "")
+            if result_id:
+                latest[result_id] = record
+
+        executions_by_trace: defaultdict[str, list[dict[str, Any]]] = defaultdict(list)
+        for execution in self._runs():
+            executions_by_trace[str(execution.get("trace_id") or "")].append(execution)
+        span_ids_by_root: dict[tuple[str, str | None], set[str]] = {}
+        parent_id_by_root: dict[tuple[str, str | None], str | None] = {}
+        timing_by_root: dict[tuple[str, str | None], tuple[int, int]] = {}
+        for trace_view in self.traces.trace_views():
+            trace_id = str(trace_view.get("trace_id") or "").lower()
+            root_span_id = str(trace_view.get("root_span_id") or "").lower() or None
+            root_span = next(
+                (
+                    span
+                    for span in trace_view.get("spans") or []
+                    if str(span.get("span_id") or "").lower() == root_span_id
+                ),
+                {},
+            )
+            span_ids_by_root[(trace_id, root_span_id)] = {
+                str(span.get("span_id") or "").lower()
+                for span in trace_view.get("spans") or []
+                if span.get("span_id")
+            }
+            parent_id_by_root[(trace_id, root_span_id)] = (
+                str(root_span.get("parent_span_id") or "").lower() or None
+            )
+            timing_by_root[(trace_id, root_span_id)] = (
+                int(trace_view.get("start_time_unix_nano") or 0),
+                int(trace_view.get("end_time_unix_nano") or 0),
+            )
+
+        rows: list[dict[str, Any]] = []
+        for record in latest.values():
+            trace = record.get("trace") or {}
+            trace_id = str(trace.get("trace_id") or "").lower()
+            referenced_span_id = str(trace.get("span_id") or "").lower() or None
+            referenced_root_id = str(trace.get("root_span_id") or "").lower() or None
+            candidates = executions_by_trace.get(trace_id, [])
+
+            executions: list[dict[str, Any]] = []
+            logical_root_id: str | None = None
+            for candidate in candidates:
+                candidate_root = candidate.get("root_span_id")
+                span_ids = span_ids_by_root.get((trace_id, candidate_root), set())
+                if referenced_span_id is not None:
+                    matches = referenced_span_id in span_ids
+                elif referenced_root_id is not None:
+                    matches = (
+                        referenced_root_id == candidate_root
+                        or referenced_root_id in span_ids
+                    )
+                else:
+                    matches = len(candidates) == 1
+                if matches:
+                    executions.append(candidate)
+            if not executions and (referenced_span_id or referenced_root_id):
+                logical_ids = {referenced_span_id, referenced_root_id} - {None}
+                executions = [
+                    candidate
+                    for candidate in candidates
+                    if parent_id_by_root.get((trace_id, candidate.get("root_span_id")))
+                    in logical_ids
+                ]
+                logical_parents = {
+                    parent_id_by_root.get((trace_id, candidate.get("root_span_id")))
+                    for candidate in executions
+                }
+                if len(logical_parents) == 1:
+                    logical_root_id = next(iter(logical_parents))
+            if not executions and len(candidates) == 1:
+                executions = candidates
+
+            execution: dict[str, Any] | None = None
+            if len(executions) == 1:
+                execution = executions[0]
+            elif executions:
+                timings = [
+                    timing_by_root[(trace_id, candidate.get("root_span_id"))]
+                    for candidate in executions
+                ]
+                execution = {
+                    "trace_id": trace_id,
+                    "root_span_id": logical_root_id,
+                    "latency_ms": (
+                        max(end for _start, end in timings)
+                        - min(start for start, _end in timings)
+                    )
+                    / 1_000_000,
+                    "input_tokens": _complete_sum(executions, "input_tokens"),
+                    "output_tokens": _complete_sum(executions, "output_tokens"),
+                    "cost_usd": _complete_sum(executions, "cost_usd"),
+                    "status": (
+                        "error"
+                        if any(item.get("status") == "error" for item in executions)
+                        else "ok"
+                    ),
+                    "models": sorted(
+                        {
+                            str(model)
+                            for item in executions
+                            for model in item.get("models") or []
+                        }
+                    ),
+                }
+            rows.append(
+                {
+                    **record,
+                    "execution": (
+                        {
+                            "trace_id": execution.get("trace_id"),
+                            "root_span_id": execution.get("root_span_id"),
+                            "latency_ms": execution.get("latency_ms"),
+                            "input_tokens": execution.get("input_tokens"),
+                            "output_tokens": execution.get("output_tokens"),
+                            "cost_usd": execution.get("cost_usd"),
+                            "status": execution.get("status"),
+                            "models": execution.get("models") or [],
+                        }
+                        if execution is not None
+                        else None
+                    ),
                 }
             )
         return rows
@@ -1271,6 +1499,22 @@ def create_quality_router(
     @router.get("/eval-runs")
     def eval_runs() -> list[dict[str, Any]]:
         return view.experiments()
+
+    @router.get("/eval-runs/{experiment_id}/results")
+    def eval_run_results(
+        experiment_id: str,
+        offset: int = Query(default=0, ge=0),
+        limit: int = Query(default=500, ge=1, le=2000),
+    ) -> dict[str, Any]:
+        if not any(row["experiment_id"] == experiment_id for row in view.experiments()):
+            raise HTTPException(status_code=404, detail="evaluation run not found")
+        results = view.experiment_results(experiment_id)
+        return {
+            "experiment_id": experiment_id,
+            "total": len(results),
+            "offset": offset,
+            "results": results[offset : offset + limit],
+        }
 
     @router.get("/experiments/{experiment_id}/matrix")
     def experiment_matrix(experiment_id: str) -> dict[str, Any]:

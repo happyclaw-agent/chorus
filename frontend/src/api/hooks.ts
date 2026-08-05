@@ -180,6 +180,15 @@ export function useEvalRuns() {
   });
 }
 
+/** Per-example application executions and evaluator feedback for one experiment. */
+export function useEvalResults(experimentId: string | undefined) {
+  return useQuery({
+    queryKey: ['eval-results', experimentId],
+    queryFn: () => api.getEvalResults(experimentId!),
+    enabled: Boolean(experimentId),
+  });
+}
+
 /** Registered evaluator definitions plus generic case/run sidecars. */
 export function useEvaluationOverview() {
   return useQuery({

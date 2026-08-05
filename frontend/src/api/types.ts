@@ -183,7 +183,7 @@ export interface EvalRun {
   experiment_id: string;
   name: string | null;
   description: string | null;
-  kind: 'aggregate';
+  kind: 'aggregate' | 'experiment';
   created_at: string | null;
   source: string;
   model: string;
@@ -193,8 +193,58 @@ export interface EvalRun {
   failed: number;
   total: number;
   metrics: Record<string, EvalMetric>;
+  dataset: string | null;
+  result_count: number;
   trace_ids: string[];
   run_count: number;
+}
+
+export interface EvalFeedback {
+  key: string;
+  score?: number;
+  value?: string | boolean;
+  comment?: string | null;
+  error?: string | null;
+}
+
+export interface EvalExecution {
+  trace_id: string;
+  root_span_id: string | null;
+  latency_ms: number | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cost_usd: number | null;
+  status: string;
+  models: string[];
+}
+
+export interface EvalResult {
+  schema_version: number;
+  result_id: string;
+  run_id: string;
+  example_id: string;
+  dataset: string;
+  created_at: string;
+  status: string;
+  inputs: Record<string, unknown>;
+  outputs: Record<string, unknown>;
+  reference_outputs: Record<string, unknown> | null;
+  feedback: EvalFeedback[];
+  trace: {
+    trace_id: string;
+    span_id?: string | null;
+    root_span_id?: string | null;
+  } | null;
+  execution: EvalExecution | null;
+  error: string | null;
+  metadata: Record<string, unknown>;
+}
+
+export interface EvalResultPage {
+  experiment_id: string;
+  total: number;
+  offset: number;
+  results: EvalResult[];
 }
 
 /** One application-supplied evaluator definition registered with Chorus. */

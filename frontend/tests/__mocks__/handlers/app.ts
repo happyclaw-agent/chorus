@@ -63,6 +63,8 @@ const evalRun = {
   passed: 181,
   failed: 5,
   total: 186,
+  dataset: 'flex-quality',
+  result_count: 2,
   run_count: 186,
   trace_ids: [],
   metrics: {
@@ -81,6 +83,63 @@ const evalRun = {
       success: true,
     },
   },
+};
+
+const evalResultPage = {
+  experiment_id: 'deepeval-run-1',
+  total: 2,
+  offset: 0,
+  results: [
+    {
+      schema_version: 1,
+      result_id: 'result-failed',
+      run_id: 'deepeval-run-1',
+      example_id: 'fitness-tired-01',
+      dataset: 'flex-quality',
+      created_at: '2026-08-05T03:05:00Z',
+      status: 'failed',
+      inputs: { message: 'I am too tired' },
+      outputs: { reply: 'Do it anyway.' },
+      reference_outputs: { criteria: 'Supportive accountability' },
+      feedback: [
+        {
+          key: 'Fitness Accountability',
+          score: 0,
+          comment: 'The response was not empathetic.',
+        },
+      ],
+      trace: { trace_id: 'abc123def4567890', root_span_id: 'unexported-root' },
+      execution: {
+        trace_id: 'abc123def4567890',
+        root_span_id: null,
+        latency_ms: 1234,
+        input_tokens: 100,
+        output_tokens: 50,
+        cost_usd: 0.01,
+        status: 'ok',
+        models: ['model-a'],
+      },
+      error: null,
+      metadata: {},
+    },
+    {
+      schema_version: 1,
+      result_id: 'result-passed',
+      run_id: 'deepeval-run-1',
+      example_id: 'workout-plan-01',
+      dataset: 'flex-quality',
+      created_at: '2026-08-05T03:05:01Z',
+      status: 'passed',
+      inputs: { message: 'What is my workout?' },
+      outputs: { reply: 'Today is upper body.' },
+      reference_outputs: { criteria: 'Use the workout plan' },
+      feedback: [{ key: 'workout_skill', score: 1, comment: 'Correct plan.' }],
+      trace: null,
+      execution: null,
+      error: null,
+      metadata: {},
+    },
+  ],
 };
 
 const evaluationOverview = {
@@ -430,6 +489,7 @@ export const appHandlers = [
     ])
   ),
   http.get('*/api/eval-runs', () => HttpResponse.json([evalRun])),
+  http.get('*/api/eval-runs/:experimentId/results', () => HttpResponse.json(evalResultPage)),
   http.get('*/api/evals', () => HttpResponse.json(evaluationOverview)),
   http.get('*/api/experiments/:experimentId/matrix', ({ params }) => {
     const matrix = matrices[params.experimentId as string];

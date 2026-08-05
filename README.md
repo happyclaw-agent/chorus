@@ -16,6 +16,25 @@ Feedback, retained content, evaluation cases, evaluation catalogs, and
 evaluation results are versioned JSONL sidecars linked by real trace and span
 IDs. They never replace or reshape the OTLP trace data.
 
+## Evaluation model
+
+Chorus follows the dataset and experiment model used by LangSmith:
+
+- a dataset contains reusable examples with structured inputs and optional
+  reference outputs;
+- an experiment contains exactly one result row for every evaluated example;
+- each result keeps the application output and evaluator feedback, then joins
+  to its canonical OTLP execution for latency, token usage, cost, status, and
+  the span waterfall;
+- evaluator definitions are separately inspectable configuration, not result
+  rows or synthetic model-matrix axes.
+
+The **Runs** page is therefore an example-results table, not an aggregate check
+counter. Aggregate evaluator scores remain a secondary summary of those rows.
+The **Evals** page exposes evaluator setup and dataset membership. A promoted
+production trace creates a new dataset example sidecar linked to the original
+OTLP identifiers; it does not copy or convert the trace into a private format.
+
 ## Local use
 
 ```bash

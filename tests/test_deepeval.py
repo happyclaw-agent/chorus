@@ -1,4 +1,9 @@
-from abbrivio.deepeval import export_deepeval_summary, load_evaluation_cases
+from abbrivio.deepeval import (
+    export_deepeval_summary,
+    export_evaluation_results,
+    load_evaluation_cases,
+    load_evaluation_results,
+)
 from abbrivio.sidecars import SidecarStore
 
 
@@ -128,3 +133,155 @@ def test_multiple_evaluated_models_are_reported_as_mixed(tmp_path):
     )
 
     assert run["model"] == "mixed"
+
+
+def test_export_persists_langsmith_style_results_per_example(tmp_path):
+    store = SidecarStore(tmp_path)
+    run = export_deepeval_summary(
+        store,
+        {
+            "run_id": "run-1",
+            "dataset": "flex-quality",
+            "passed": 1,
+            "total": 1,
+        },
+        results=[
+            {
+                "example_id": "example-1",
+                "status": "passed",
+                "inputs": {"message": "I am tired"},
+                "outputs": {"reply": "Take one small step."},
+                "reference_outputs": {"criteria": "Supportive accountability"},
+                "feedback": [
+                    {
+                        "key": "Fitness Accountability",
+                        "score": 1.0,
+                        "comment": "Direct and supportive",
+                    }
+                ],
+                "trace": {
+                    "trace_id": "11" * 16,
+                    "span_id": "22" * 8,
+                },
+                "metadata": {"dataset": "must-not-override"},
+            }
+        ],
+    )
+
+    results = load_evaluation_results(store, "run-1")
+
+    assert run["dataset"] == "flex-quality"
+    assert len(results) == 1
+    assert results[0]["example_id"] == "example-1"
+    assert results[0]["dataset"] == "flex-quality"
+    assert results[0]["inputs"] == {"message": "I am tired"}
+    assert results[0]["feedback"][0]["key"] == "Fitness Accountability"
+    assert results[0]["trace"]["trace_id"] == "11" * 16
+    assert load_evaluation_cases(store)[0]["attributes"]["dataset"] == "flex-quality"
+
+
+def test_invalid_result_batch_does_not_append_partial_experiment(tmp_path):
+    store = SidecarStore(tmp_path)
+
+    try:
+        export_deepeval_summary(
+            store,
+            {"run_id": "invalid-run", "dataset": "flex-quality", "total": 2},
+            results=[
+                {"example_id": "valid", "inputs": {"message": "hello"}},
+                {"example_id": "invalid", "inputs": ["not", "an", "object"]},
+            ],
+        )
+    except ValueError as error:
+        assert str(error) == "evaluation inputs and outputs must be objects"
+    else:
+        raise AssertionError("invalid result batch should fail")
+
+    assert store.read("eval_runs") == []
+    assert store.read("eval_cases") == []
+    assert store.read("eval_results") == []
+
+
+def test_falsy_non_object_result_fields_are_rejected(tmp_path):
+    store = SidecarStore(tmp_path)
+
+    for field, value in (("inputs", []), ("outputs", ""), ("feedback", {})):
+        try:
+            export_evaluation_results(store, "run-1", [{field: value}])
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"{field} should reject {value!r}")
+
+    assert store.read("eval_cases") == []
+    assert store.read("eval_results") == []
+
+
+def test_non_json_result_batch_does_not_append_partial_experiment(tmp_path):
+    store = SidecarStore(tmp_path)
+
+    try:
+        export_deepeval_summary(
+            store,
+            {"run_id": "invalid-json-run", "dataset": "flex-quality", "total": 1},
+            results=[
+                {
+                    "example_id": "example-1",
+                    "feedback": [{"key": "quality", "score": float("nan")}],
+                }
+            ],
+        )
+    except ValueError as error:
+        assert str(error) == "evaluation results must be JSON serializable"
+    else:
+        raise AssertionError("non-JSON result batch should fail")
+
+    assert store.read("eval_runs") == []
+    assert store.read("eval_cases") == []
+    assert store.read("eval_results") == []
+
+
+def test_separate_result_exports_do_not_reuse_generated_ids(tmp_path):
+    store = SidecarStore(tmp_path)
+
+    first = export_evaluation_results(
+        store,
+        "run-1",
+        [{"example_id": "example-1", "inputs": {"message": "first"}}],
+    )
+    second = export_evaluation_results(
+        store,
+        "run-1",
+        [{"example_id": "example-2", "inputs": {"message": "second"}}],
+    )
+
+    assert first[0]["result_id"] != second[0]["result_id"]
+    assert {row["example_id"] for row in load_evaluation_results(store, "run-1")} == {
+        "example-1",
+        "example-2",
+    }
+
+
+def test_new_run_does_not_overwrite_curated_dataset_example(tmp_path):
+    store = SidecarStore(tmp_path)
+    original = {
+        "example_id": "example-1",
+        "inputs": {"message": "hello"},
+        "reference_outputs": {"answer": "original"},
+    }
+    export_evaluation_results(store, "run-1", [original], dataset="flex-quality")
+    curated = load_evaluation_cases(store)[0]
+    store.append(
+        "eval_cases",
+        {
+            **curated,
+            "reference_outputs": {"answer": "human-reviewed"},
+            "expected_output": "human-reviewed",
+        },
+    )
+
+    export_evaluation_results(store, "run-2", [original], dataset="flex-quality")
+
+    final = load_evaluation_cases(store)[0]
+    assert final["reference_outputs"] == {"answer": "human-reviewed"}
+    assert final["expected_output"] == "human-reviewed"

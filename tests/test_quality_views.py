@@ -476,6 +476,313 @@ def test_eval_runs_appear_as_aggregate_reports_not_model_matrices(tmp_path):
     assert matrix.status_code == 404
 
 
+def test_eval_run_results_join_examples_feedback_and_otlp_usage(tmp_path):
+    client, sidecars, reference = _client_with_trace(tmp_path)
+    sidecars.append(
+        "eval_runs",
+        EvaluationRun(
+            schema_version=1,
+            run_id="run-with-results",
+            created_at=utc_now(),
+            source="deepeval",
+            model="model-a",
+            evaluator="judge-a",
+            passed=1,
+            failed=0,
+            total=1,
+            metrics={},
+            raw_summary={},
+            dataset="flex-quality",
+        ).to_dict(),
+    )
+    sidecars.append(
+        "eval_results",
+        {
+            "schema_version": 1,
+            "result_id": "result-1",
+            "run_id": "run-with-results",
+            "example_id": "example-1",
+            "dataset": "flex-quality",
+            "status": "passed",
+            "inputs": {"message": "Help me"},
+            "outputs": {"reply": "One step"},
+            "reference_outputs": {"criteria": "Helpful"},
+            "feedback": [{"key": "quality", "score": 1.0}],
+            "trace": {
+                "trace_id": reference.trace_id,
+                "span_id": reference.span_id,
+            },
+        },
+    )
+
+    run = client.get("/api/eval-runs").json()[0]
+    response = client.get("/api/eval-runs/run-with-results/results")
+    result = response.json()["results"][0]
+
+    assert run["kind"] == "experiment"
+    assert run["dataset"] == "flex-quality"
+    assert run["result_count"] == 1
+    assert response.json()["total"] == 1
+    assert result["inputs"] == {"message": "Help me"}
+    assert result["feedback"] == [{"key": "quality", "score": 1.0}]
+    assert result["execution"]["input_tokens"] == 100
+    assert result["execution"]["output_tokens"] == 25
+    assert result["execution"]["cost_usd"] == 0.00042
+    assert result["execution"]["latency_ms"] == 250
+
+
+def test_eval_result_span_selects_the_matching_root_execution(tmp_path):
+    trace_store = OtlpJsonlStore(tmp_path / "traces.otlp.jsonl")
+    sidecars = SidecarStore(tmp_path)
+    observer = AbbrivioCompletionObserver(OtlpJsonlSpanExporter(trace_store))
+    trace_id = "11" * 16
+    selected_root = "22" * 8
+    observer(
+        Observation(
+            trace_id=trace_id,
+            span_id=selected_root,
+            latency_ms=111,
+            input_tokens=10,
+            output_tokens=1,
+            total_tokens=11,
+        )
+    )
+    observer(
+        Observation(
+            trace_id=trace_id,
+            span_id="33" * 8,
+            latency_ms=333,
+            input_tokens=30,
+            output_tokens=3,
+            total_tokens=33,
+        )
+    )
+    sidecars.append(
+        "eval_runs",
+        EvaluationRun(
+            schema_version=1,
+            run_id="multi-root",
+            created_at=utc_now(),
+            source="deepeval",
+            model="model-a",
+            evaluator="judge-a",
+            passed=1,
+            failed=0,
+            total=1,
+            metrics={},
+            raw_summary={},
+            dataset="flex-quality",
+        ).to_dict(),
+    )
+    sidecars.append(
+        "eval_results",
+        {
+            "result_id": "result-1",
+            "run_id": "multi-root",
+            "example_id": "example-1",
+            "trace": {
+                "trace_id": trace_id,
+                "span_id": selected_root,
+                "root_span_id": "44" * 8,
+            },
+        },
+    )
+    client = TestClient(
+        create_app(tmp_path, trace_store=trace_store, sidecar_store=sidecars)
+    )
+
+    execution = client.get("/api/eval-runs/multi-root/results").json()["results"][0][
+        "execution"
+    ]
+
+    assert execution["root_span_id"] == selected_root
+    assert execution["latency_ms"] == 111
+    assert execution["input_tokens"] == 10
+
+
+def test_eval_run_counts_latest_append_only_result_versions(tmp_path):
+    client, sidecars, _reference = _client_with_trace(tmp_path)
+    sidecars.append(
+        "eval_runs",
+        EvaluationRun(
+            schema_version=1,
+            run_id="retried-run",
+            created_at=utc_now(),
+            source="deepeval",
+            model="model-a",
+            evaluator="judge-a",
+            passed=1,
+            failed=0,
+            total=1,
+            metrics={},
+            raw_summary={},
+            dataset="flex-quality",
+        ).to_dict(),
+    )
+    result = {
+        "result_id": "result-1",
+        "run_id": "retried-run",
+        "example_id": "example-1",
+        "status": "failed",
+    }
+    sidecars.append("eval_results", result)
+    sidecars.append("eval_results", {**result, "status": "passed"})
+
+    run = client.get("/api/eval-runs").json()[0]
+    page = client.get("/api/eval-runs/retried-run/results").json()
+
+    assert run["result_count"] == 1
+    assert run["run_count"] == 1
+    assert page["total"] == 1
+    assert page["results"][0]["status"] == "passed"
+
+
+def test_eval_result_uses_only_root_when_logical_span_was_not_exported(tmp_path):
+    client, sidecars, reference = _client_with_trace(tmp_path)
+    sidecars.append(
+        "eval_runs",
+        {
+            "run_id": "logical-parent-run",
+            "source": "deepeval",
+            "total": 1,
+        },
+    )
+    sidecars.append(
+        "eval_results",
+        {
+            "result_id": "result-1",
+            "run_id": "logical-parent-run",
+            "example_id": "example-1",
+            "trace": {
+                "trace_id": reference.trace_id,
+                "span_id": "44" * 8,
+                "root_span_id": "44" * 8,
+            },
+        },
+    )
+
+    execution = client.get("/api/eval-runs/logical-parent-run/results").json()[
+        "results"
+    ][0]["execution"]
+
+    assert execution["root_span_id"] == reference.span_id
+    assert execution["input_tokens"] == 100
+
+
+def test_eval_result_aggregates_roots_under_missing_logical_parent(tmp_path):
+    trace_store = OtlpJsonlStore(tmp_path / "traces.otlp.jsonl")
+    sidecars = SidecarStore(tmp_path)
+    observer = AbbrivioCompletionObserver(
+        OtlpJsonlSpanExporter(trace_store),
+        app_attributes={"abbrivio.cost.amount": 0.001},
+    )
+    trace_id = "11" * 16
+    logical_parent = "44" * 8
+    reference = TraceRef(
+        trace_id=trace_id,
+        span_id=logical_parent,
+        root_span_id=logical_parent,
+    )
+    sidecars.append(
+        "content",
+        ContentRecord(
+            schema_version=1,
+            content_id="logical-content",
+            recorded_at=utc_now(),
+            trace=reference,
+            input_text="logical input",
+        ).to_dict(),
+    )
+    sidecars.append(
+        "feedback",
+        FeedbackEvent(
+            schema_version=1,
+            feedback_id="logical-feedback",
+            occurred_at=utc_now(),
+            kind="quality",
+            value=1,
+            source="test",
+            trace=reference,
+        ).to_dict(),
+    )
+    observer(
+        Observation(
+            trace_id=trace_id,
+            span_id="22" * 8,
+            parent_span_id=logical_parent,
+            latency_ms=111,
+            input_tokens=10,
+            output_tokens=1,
+            total_tokens=11,
+        )
+    )
+    observer(
+        Observation(
+            trace_id=trace_id,
+            span_id="55" * 8,
+            parent_span_id="66" * 8,
+            latency_ms=444,
+            input_tokens=100,
+            output_tokens=10,
+            total_tokens=110,
+        )
+    )
+    observer(
+        Observation(
+            trace_id=trace_id,
+            span_id="33" * 8,
+            parent_span_id=logical_parent,
+            latency_ms=333,
+            input_tokens=30,
+            output_tokens=3,
+            total_tokens=33,
+        )
+    )
+    sidecars.append(
+        "eval_runs",
+        {"run_id": "fragmented-run", "source": "deepeval", "total": 1},
+    )
+    sidecars.append(
+        "eval_results",
+        {
+            "result_id": "result-1",
+            "run_id": "fragmented-run",
+            "example_id": "example-1",
+            "trace": {
+                "trace_id": trace_id,
+                "span_id": logical_parent,
+                "root_span_id": logical_parent,
+            },
+        },
+    )
+    client = TestClient(
+        create_app(tmp_path, trace_store=trace_store, sidecar_store=sidecars)
+    )
+
+    execution = client.get("/api/eval-runs/fragmented-run/results").json()["results"][
+        0
+    ]["execution"]
+    trace = client.get(
+        f"/api/ui/traces/{trace_id}", params={"root_span_id": logical_parent}
+    ).json()
+    full_trace = client.get(f"/api/ui/traces/{trace_id}").json()
+
+    assert execution["root_span_id"] == logical_parent
+    assert execution["latency_ms"] == 333
+    assert execution["input_tokens"] == 40
+    assert execution["output_tokens"] == 4
+    assert execution["cost_usd"] == 0.002
+    assert trace["run"]["input_tokens"] == 40
+    assert trace["run"]["input"] == "logical input"
+    assert trace["scores"][0]["name"] == "quality"
+    assert trace["spans"]["span_id"] == "synthetic-root"
+    assert {child["span_id"] for child in trace["spans"]["children"]} == {
+        "22" * 8,
+        "33" * 8,
+    }
+    assert full_trace["run"]["input_tokens"] == 140
+
+
 def test_eval_run_normalizes_nullable_evaluated_models(tmp_path):
     client, sidecars, _reference = _client_with_trace(tmp_path)
     sidecars.append(

@@ -112,6 +112,30 @@ class EvaluationRun:
     total: int
     metrics: dict[str, Any]
     raw_summary: dict[str, Any]
+    dataset: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
+class EvaluationResult:
+    """One application execution and its feedback for a dataset example."""
+
+    schema_version: int
+    result_id: str
+    run_id: str
+    example_id: str
+    dataset: str
+    created_at: str
+    status: str
+    inputs: dict[str, Any]
+    outputs: dict[str, Any]
+    reference_outputs: dict[str, Any] | None
+    feedback: list[dict[str, Any]]
+    trace: TraceRef | None = None
+    error: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
