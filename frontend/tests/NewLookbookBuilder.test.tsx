@@ -235,14 +235,12 @@ describe('New Lookbook builder — from Traces', () => {
     await waitFor(() => expect(screen.getByTestId('add-to-lookbook-success')).toBeInTheDocument());
     expect(calls).toHaveLength(3);
 
-    // TracesPage mounts two active useRuns() observers (the filtered
-    // `runsQuery` and the `limit: 500` `allRunsQuery`). A single
-    // invalidation pass after the whole batch settles refetches /api/runs
-    // at most once per observer. Invalidating once per successful promote
-    // (the pre-fix behavior) would fire this many times per trace instead —
-    // for 3 traces, well beyond the 2-observer ceiling.
+    // TracesPage mounts one active filtered useRuns() observer. A single
+    // invalidation pass after the whole batch settles refetches /api/runs at
+    // most once. Invalidating once per successful promote (the pre-fix
+    // behavior) would fire this many times per trace instead.
     await waitFor(() => expect(runsHits).toBeGreaterThan(0));
-    expect(runsHits).toBeLessThanOrEqual(2);
+    expect(runsHits).toBeLessThanOrEqual(1);
   });
 
   it('clears the selection when the filters change, so a stale selection never promotes hidden traces', async () => {

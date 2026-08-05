@@ -15,9 +15,9 @@ import {
 
 /**
  * Trash icon + confirm dialog that hides an Agent Group. Calls the real
- * DELETE /api/groups/{id} endpoint, which appends a reversible `hide_group`
- * override — no trace file or run is ever touched, so nothing is actually
- * destroyed (mirrors RemoveLookButton's confirm-before-delete pattern).
+ * DELETE /api/groups/{id} endpoint, which appends a `hide_group` override.
+ * No trace file or run is touched (mirrors RemoveLookButton's
+ * confirm-before-delete pattern).
  */
 export function DeleteGroupButton({ groupId, groupName }: { groupId: string; groupName: string }) {
   const [open, setOpen] = useState(false);
@@ -56,8 +56,8 @@ export function DeleteGroupButton({ groupId, groupName }: { groupId: string; gro
           <DialogHeader>
             <DialogTitle>Hide Agent Group</DialogTitle>
             <DialogDescription>
-              Hides <span className="font-mono">{groupName}</span> from the Agent Groups list.
-              Reversible — no trace or run is deleted, only the group's visibility changes.
+              Hides <span className="font-mono">{groupName}</span> from the Agent Groups list. No
+              trace or run is deleted; this only removes the group from this Chorus view.
             </DialogDescription>
           </DialogHeader>
           {error ? (

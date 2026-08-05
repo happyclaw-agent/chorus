@@ -94,6 +94,19 @@ def test_quality_ui_reads_environment_from_otlp_resource_attributes(tmp_path):
     assert client.get("/api/runs").json()[0]["mode"] == "prod"
 
 
+def test_unrecognized_environment_remains_unclassified(tmp_path):
+    client, _sidecars, _reference = _client_with_trace(
+        tmp_path, environment="customer-sandbox"
+    )
+
+    run = client.get("/api/runs").json()[0]
+    detail = client.get("/api/groups/example-agent").json()
+
+    assert run["mode"] is None
+    assert detail["lanes"]["dev"] == []
+    assert detail["lanes"]["unknown"][0]["trace_id"] == run["trace_id"]
+
+
 def test_quality_ui_projects_groups_and_component_graph(tmp_path):
     client, _sidecars, reference = _client_with_trace(tmp_path)
 
@@ -457,7 +470,7 @@ def test_invalid_agent_override_does_not_write_durable_state(tmp_path):
     assert sidecars.read("group_overrides") == []
 
 
-def test_removing_custom_group_assignment_restores_trace_group(tmp_path):
+def test_custom_group_membership_does_not_replace_trace_group(tmp_path):
     client, _sidecars, _reference = _client_with_trace(tmp_path)
 
     assert (
@@ -467,13 +480,64 @@ def test_removing_custom_group_assignment_restores_trace_group(tmp_path):
         ).status_code
         == 200
     )
-    assert client.get("/api/runs").json()[0]["group_id"] == "custom-group"
+    groups = {group["group_id"]: group for group in client.get("/api/groups").json()}
+    assert set(groups) == {"custom-group", "example-agent"}
+    assert groups["custom-group"]["agent_ids"] == ["example-agent"]
+    assert groups["example-agent"]["agent_ids"] == ["example-agent"]
+    assert client.get("/api/runs").json()[0]["group_id"] == "example-agent"
+    assert (
+        client.get("/api/runs", params={"group_id": "custom-group"}).json()[0][
+            "group_id"
+        ]
+        == "custom-group"
+    )
 
     assert (
         client.delete("/api/groups/custom-group/agents/example-agent").status_code
         == 200
     )
     assert client.get("/api/runs").json()[0]["group_id"] == "example-agent"
+
+
+def test_invalid_group_removal_does_not_write_durable_state(tmp_path):
+    client, sidecars, _reference = _client_with_trace(tmp_path)
+
+    response = client.delete("/api/groups/example-agent/agents/missing-agent")
+
+    assert response.status_code == 404
+    assert sidecars.read("group_overrides") == []
+
+
+def test_runs_support_server_side_search_count_and_pagination(tmp_path):
+    trace_store = OtlpJsonlStore(tmp_path / "traces.otlp.jsonl")
+    exporter = OtlpJsonlSpanExporter(trace_store)
+    observer = AbbrivioCompletionObserver(
+        exporter,
+        resource={"service.name": "example-agent"},
+    )
+    observer(Observation())
+    observer(
+        replace(
+            Observation(),
+            trace_id="33" * 16,
+            span_id="44" * 8,
+            interaction_id="older-searchable",
+        )
+    )
+    client = TestClient(create_app(tmp_path, trace_store=trace_store))
+
+    first = client.get("/api/runs", params={"limit": 1}).json()
+    second = client.get("/api/runs", params={"limit": 1, "offset": 1}).json()
+    searched = client.get("/api/runs", params={"search": "33" * 8}).json()
+    count = client.get("/api/run-count", params={"search": "33" * 8}).json()
+    facets = client.get("/api/run-facets").json()
+
+    assert len(first) == 1
+    assert len(second) == 1
+    assert first[0]["trace_id"] != second[0]["trace_id"]
+    assert searched[0]["trace_id"] == "33" * 16
+    assert count == {"count": 1}
+    assert facets == {"agent_ids": ["example-agent"], "experiment_ids": []}
 
 
 def test_quality_mutations_share_the_configured_json_body_limit(tmp_path):

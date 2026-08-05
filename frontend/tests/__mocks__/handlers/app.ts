@@ -378,6 +378,10 @@ export const appHandlers = [
   }),
   http.post('*/api/refresh', () => HttpResponse.json({ runs: 198 })),
   http.get('*/api/runs', () => HttpResponse.json([run])),
+  http.get('*/api/run-count', () => HttpResponse.json({ count: 1 })),
+  http.get('*/api/run-facets', () =>
+    HttpResponse.json({ agent_ids: ['test-agent'], experiment_ids: [] })
+  ),
   http.get('*/api/groups', () => HttpResponse.json([group])),
   http.get('*/api/groups/:groupId', ({ params }) => {
     if (params.groupId !== 'emea-planning') {
@@ -398,6 +402,7 @@ export const appHandlers = [
             input: 'prod scenario that errored',
           },
         ],
+        unknown: [],
       },
     });
   }),
@@ -407,13 +412,13 @@ export const appHandlers = [
   http.post('*/api/groups/:groupId/agents', ({ params }) =>
     HttpResponse.json({
       group: { ...group, group_id: params.groupId },
-      lanes: { dev: [], ci: [], prod: [] },
+      lanes: { dev: [], ci: [], prod: [], unknown: [] },
     })
   ),
   http.delete('*/api/groups/:groupId/agents/:agentId', ({ params }) =>
     HttpResponse.json({
       group: { ...group, group_id: params.groupId },
-      lanes: { dev: [], ci: [], prod: [] },
+      lanes: { dev: [], ci: [], prod: [], unknown: [] },
     })
   ),
   http.get('*/api/experiments', () =>

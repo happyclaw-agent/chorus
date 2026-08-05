@@ -224,34 +224,37 @@ class QualityView:
     def _runs(self) -> list[dict[str, Any]]:
         content = self.sidecars.read("content")
         metadata = _trace_meta(self.sidecars.read("trace_meta"))
-        runs = [
+        return [
             self._run(trace, content, metadata) for trace in self.traces.trace_views()
         ]
-        base_groups = {
-            id(run): (run.get("group_id"), run.get("group_name")) for run in runs
-        }
-        active_assignments: dict[int, str] = {}
+
+    def _runs_and_memberships(
+        self,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+        runs = self._runs()
+        memberships: list[dict[str, str]] = []
+        for run in runs:
+            group_id = run.get("group_id")
+            membership: dict[str, str] = {}
+            if group_id:
+                membership[str(group_id)] = str(run.get("group_name") or group_id)
+            memberships.append(membership)
         overrides = self.sidecars.read("group_overrides")
         for override in overrides:
             kind = override.get("type")
             agent_id = str(override.get("agent_id") or "")
             group_id = str(override.get("group_id") or "")
             if kind == "add_agent" and agent_id and group_id:
-                for run in runs:
+                for index, run in enumerate(runs):
                     if run["agent_id"] == agent_id:
-                        run["group_id"] = group_id
-                        run["group_name"] = str(override.get("group_name") or group_id)
-                        active_assignments[id(run)] = group_id
+                        memberships[index][group_id] = str(
+                            override.get("group_name") or group_id
+                        )
             elif kind == "remove_agent" and agent_id and group_id:
-                for run in runs:
-                    if run["agent_id"] == agent_id and run["group_id"] == group_id:
-                        if active_assignments.get(id(run)) == group_id:
-                            run["group_id"], run["group_name"] = base_groups[id(run)]
-                            active_assignments.pop(id(run), None)
-                        else:
-                            run["group_id"] = None
-                            run["group_name"] = None
-        return runs
+                for index, run in enumerate(runs):
+                    if run["agent_id"] == agent_id:
+                        memberships[index].pop(group_id, None)
+        return runs, memberships
 
     def _run(
         self,
@@ -312,8 +315,10 @@ class QualityView:
             mode = "prod"
         elif environment in {"ci", "test", "testing", "staging"}:
             mode = "ci"
-        else:
+        elif environment in {"dev", "development", "local"}:
             mode = "dev"
+        else:
+            mode = None
 
         input_text, output_text = _trace_content(
             content,
@@ -448,20 +453,71 @@ class QualityView:
         status: str | None = None,
         group_id: str | None = None,
         mode: str | None = None,
+        search: str | None = None,
+        offset: int = 0,
         limit: int = 500,
     ) -> list[dict[str, Any]]:
-        rows = self._runs()
+        rows, memberships = self._runs_and_memberships()
+        projected: list[dict[str, Any]] = []
+        for row, row_memberships in zip(rows, memberships, strict=True):
+            if group_id is not None:
+                group_name = row_memberships.get(group_id)
+                if group_name is None:
+                    continue
+                row = {**row, "group_id": group_id, "group_name": group_name}
+            projected.append(row)
+        rows = projected
         filters = {
             "agent_id": agent_id,
             "experiment_id": experiment_id,
             "status": status,
-            "group_id": group_id,
             "mode": mode,
         }
         for field, value in filters.items():
             if value is not None:
                 rows = [row for row in rows if row.get(field) == value]
-        return rows[:limit]
+        needle = (search or "").strip().lower()
+        if needle:
+            rows = [
+                row
+                for row in rows
+                if any(
+                    needle in str(row.get(field) or "").lower()
+                    for field in ("trace_id", "input", "output", "display_name")
+                )
+            ]
+        return rows[offset : offset + limit]
+
+    def run_count(
+        self,
+        *,
+        agent_id: str | None = None,
+        experiment_id: str | None = None,
+        status: str | None = None,
+        group_id: str | None = None,
+        mode: str | None = None,
+        search: str | None = None,
+    ) -> int:
+        return len(
+            self.runs(
+                agent_id=agent_id,
+                experiment_id=experiment_id,
+                status=status,
+                group_id=group_id,
+                mode=mode,
+                search=search,
+                limit=100_000_000,
+            )
+        )
+
+    def run_facets(self) -> dict[str, list[str]]:
+        rows = self._runs()
+        return {
+            "agent_ids": sorted({str(row["agent_id"]) for row in rows}),
+            "experiment_ids": sorted(
+                {str(row["experiment_id"]) for row in rows if row.get("experiment_id")}
+            ),
+        }
 
     def run(
         self, trace_id: str, root_span_id: str | None = None
@@ -683,9 +739,13 @@ class QualityView:
             if row.get("type") == "hide_group"
         }
         grouped: defaultdict[str, list[dict[str, Any]]] = defaultdict(list)
-        for run in self._runs():
-            if run.get("group_id") and str(run["group_id"]) not in hidden:
-                grouped[str(run["group_id"])].append(run)
+        runs, memberships = self._runs_and_memberships()
+        for run, row_memberships in zip(runs, memberships, strict=True):
+            for group_id, group_name in row_memberships.items():
+                if group_id not in hidden:
+                    grouped[group_id].append(
+                        {**run, "group_id": group_id, "group_name": group_name}
+                    )
         values = []
         for group_id, rows in grouped.items():
             values.append(
@@ -722,9 +782,14 @@ class QualityView:
         )
         if group is None:
             return None
-        lanes: dict[str, list[dict[str, Any]]] = {"dev": [], "ci": [], "prod": []}
+        lanes: dict[str, list[dict[str, Any]]] = {
+            "dev": [],
+            "ci": [],
+            "prod": [],
+            "unknown": [],
+        }
         for run in self.runs(group_id=group_id, limit=100_000):
-            lanes.setdefault(run.get("mode") or "dev", []).append(run)
+            lanes[run.get("mode") or "unknown"].append(run)
         return {"group": group, "lanes": lanes}
 
     def group_graph(self, group_id: str) -> dict[str, Any] | None:
@@ -906,6 +971,8 @@ def create_quality_router(
         status: str | None = None,
         group_id: str | None = None,
         mode: str | None = None,
+        search: str | None = None,
+        offset: int = Query(default=0, ge=0),
         limit: int = Query(default=500, ge=1, le=1000),
     ) -> list[dict[str, Any]]:
         return view.runs(
@@ -914,8 +981,34 @@ def create_quality_router(
             status=status,
             group_id=group_id,
             mode=mode,
+            search=search,
+            offset=offset,
             limit=limit,
         )
+
+    @router.get("/run-count")
+    def run_count(
+        agent_id: str | None = None,
+        experiment_id: str | None = None,
+        status: str | None = None,
+        group_id: str | None = None,
+        mode: str | None = None,
+        search: str | None = None,
+    ) -> dict[str, int]:
+        return {
+            "count": view.run_count(
+                agent_id=agent_id,
+                experiment_id=experiment_id,
+                status=status,
+                group_id=group_id,
+                mode=mode,
+                search=search,
+            )
+        }
+
+    @router.get("/run-facets")
+    def run_facets() -> dict[str, list[str]]:
+        return view.run_facets()
 
     @router.get("/groups")
     def groups() -> list[dict[str, Any]]:
@@ -930,6 +1023,11 @@ def create_quality_router(
 
     @router.delete("/groups/{group_id:path}/agents/{agent_id}")
     def remove_agent(group_id: str, agent_id: str) -> dict[str, Any]:
+        current = view.group_detail(group_id)
+        if current is None:
+            raise HTTPException(status_code=404, detail="group not found")
+        if agent_id not in current["group"]["agent_ids"]:
+            raise HTTPException(status_code=404, detail="agent not in group")
         sidecars.append(
             "group_overrides",
             {
@@ -953,7 +1051,7 @@ def create_quality_router(
                     "services": [],
                     "agent_ids": [],
                 },
-                "lanes": {"dev": [], "ci": [], "prod": []},
+                "lanes": {"dev": [], "ci": [], "prod": [], "unknown": []},
             }
         return detail
 

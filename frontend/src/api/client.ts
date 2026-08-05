@@ -27,6 +27,8 @@ import type {
   UpdateLookParams,
   RemoveCorpusResult,
   Run,
+  RunCount,
+  RunFacets,
   RunFilters,
   ChorusStatus,
   Stats,
@@ -133,6 +135,11 @@ async function request<T>(
 
 export const api = {
   getRuns: (filters: RunFilters = {}) => request<Run[]>('/runs', { params: { ...filters } }),
+  getRunCount: (filters: RunFilters = {}) =>
+    request<RunCount>('/run-count', {
+      params: { ...filters, limit: undefined, offset: undefined },
+    }),
+  getRunFacets: () => request<RunFacets>('/run-facets'),
   getGroups: () => request<Group[]>('/groups'),
   getGroup: (groupId: string) =>
     needsQueryGroupRoute(groupId)
@@ -143,9 +150,9 @@ export const api = {
       ? request<ComponentGraph>('/group-by-id/graph', { params: { group_id: groupId } })
       : request<ComponentGraph>(`/groups/${encodeURIComponent(groupId)}/graph`),
   /**
-   * DELETE /api/groups/{id} — hide an Agent Group. Reversible: it appends a
-   * `hide_group` override to the inbox-global overrides sidecar, never
-   * mutates trace files. 404s if the group isn't currently visible.
+   * DELETE /api/groups/{id} — hide an Agent Group by appending a
+   * `hide_group` override to the inbox-global sidecar. Trace files are never
+   * mutated. 404s if the group isn't currently visible.
    */
   hideGroup: (groupId: string) =>
     needsQueryGroupRoute(groupId)

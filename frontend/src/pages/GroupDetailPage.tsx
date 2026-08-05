@@ -3,7 +3,7 @@ import { ArrowLeft, BookOpen, Layers, User } from 'lucide-react';
 import { Link, useParams } from 'react-router-dom';
 
 import { useDatasets, useGroup } from '@/api/hooks';
-import type { Dataset, Run, RunMode } from '@/api/types';
+import type { Dataset, Run, RunLane } from '@/api/types';
 import { AddAgentControl } from '@/components/groups/AddAgentControl';
 import { ServiceChip } from '@/components/groups/ModeChip';
 import { LANE_ORDER, MODE_META } from '@/components/groups/modes';
@@ -161,9 +161,9 @@ function LaneTabs({
   active,
   onChange,
 }: {
-  counts: Record<RunMode, number>;
-  active: RunMode;
-  onChange: (mode: RunMode) => void;
+  counts: Record<RunLane, number>;
+  active: RunLane;
+  onChange: (mode: RunLane) => void;
 }) {
   return (
     <div
@@ -202,7 +202,7 @@ function LaneTabs({
 }
 
 /** The single wide list of runs for the currently-selected lane. */
-function LaneList({ mode, runs }: { mode: RunMode; runs: Run[] }) {
+function LaneList({ mode, runs }: { mode: RunLane; runs: Run[] }) {
   return (
     <div className="flex flex-col gap-2 rounded-lg border border-border bg-background/40 p-3">
       {runs.length === 0 ? (
@@ -277,9 +277,10 @@ export function GroupDetailPage() {
   const { groupId } = useParams<{ groupId: string }>();
   const groupQuery = useGroup(groupId);
   const data = groupQuery.data;
+  const unknownRuns = data?.lanes.unknown ?? [];
   // Which lane's runs the single wide list below shows — defaults to
   // production, the lane a user checking on a group is most often after.
-  const [selectedMode, setSelectedMode] = useState<RunMode>('prod');
+  const [selectedMode, setSelectedMode] = useState<RunLane>('prod');
 
   return (
     <section>
@@ -356,11 +357,12 @@ export function GroupDetailPage() {
                 dev: data.lanes.dev.length,
                 ci: data.lanes.ci.length,
                 prod: data.lanes.prod.length,
+                unknown: unknownRuns.length,
               }}
               active={selectedMode}
               onChange={setSelectedMode}
             />
-            <LaneList mode={selectedMode} runs={data.lanes[selectedMode]} />
+            <LaneList mode={selectedMode} runs={data.lanes[selectedMode] ?? []} />
           </div>
 
           {/* PRODUCTION-DEEP-DIVE SLOT — the placeholder is now the real deep-dive
@@ -370,7 +372,7 @@ export function GroupDetailPage() {
 
           <div className="mt-4">
             <RelatedEvalSuitesPanel
-              runs={[...data.lanes.dev, ...data.lanes.ci, ...data.lanes.prod]}
+              runs={[...data.lanes.dev, ...data.lanes.ci, ...data.lanes.prod, ...unknownRuns]}
             />
           </div>
         </>

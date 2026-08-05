@@ -5,6 +5,9 @@ export type RunStatus = 'ok' | 'error';
 /** Lifecycle lane a run belongs to: local dev, CI/integration, or production. */
 export type RunMode = 'dev' | 'ci' | 'prod';
 
+/** Group-detail lane used when a trace has no recognized environment tag. */
+export type RunLane = RunMode | 'unknown';
+
 export interface Run {
   trace_id: string;
   root_span_id: string | null;
@@ -50,8 +53,8 @@ export interface Group {
   cost_usd: number | null;
   first_seen: string | null;
   last_seen: string | null;
-  /** Lifecycle modes present in the group (subset of dev/ci/prod). */
-  modes: string[];
+  /** Recognized lifecycle modes present in the group (subset of dev/ci/prod). */
+  modes: RunMode[];
   services: string[];
   /** Distinct agent_ids currently counted as members of this group. */
   agent_ids: string[];
@@ -64,6 +67,7 @@ export interface GroupDetail {
     dev: Run[];
     ci: Run[];
     prod: Run[];
+    unknown: Run[];
   };
 }
 
@@ -456,7 +460,18 @@ export interface RunFilters {
   group_id?: string;
   mode?: RunMode;
   status?: RunStatus;
+  search?: string;
+  offset?: number;
   limit?: number;
+}
+
+export interface RunCount {
+  count: number;
+}
+
+export interface RunFacets {
+  agent_ids: string[];
+  experiment_ids: string[];
 }
 
 /** A trace corpus loaded by the server: a directory or the permanent inbox. */

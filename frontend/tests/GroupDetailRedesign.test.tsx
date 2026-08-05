@@ -89,6 +89,7 @@ function groupDetailHandler() {
             input: 'prod scenario that errored',
           },
         ],
+        unknown: [],
       },
     });
   });

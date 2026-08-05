@@ -25,6 +25,22 @@ export function useRuns(filters: RunFilters = {}) {
   });
 }
 
+export function useRunCount(filters: RunFilters = {}) {
+  return useQuery({
+    queryKey: ['run-count', filters],
+    queryFn: () => api.getRunCount(filters),
+    refetchInterval: LIVE_REFETCH_MS,
+  });
+}
+
+export function useRunFacets() {
+  return useQuery({
+    queryKey: ['run-facets'],
+    queryFn: () => api.getRunFacets(),
+    refetchInterval: LIVE_REFETCH_MS,
+  });
+}
+
 /** GET /api/groups — all agent groups (the top-level organizing layer). */
 export function useGroups() {
   return useQuery({

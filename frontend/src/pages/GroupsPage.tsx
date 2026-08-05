@@ -5,7 +5,7 @@ import { useGroups } from '@/api/hooks';
 import type { Group } from '@/api/types';
 import { DeleteGroupButton } from '@/components/groups/DeleteGroupButton';
 import { ModeChip, ServiceChip } from '@/components/groups/ModeChip';
-import { LANE_ORDER } from '@/components/groups/modes';
+import { RUN_MODE_ORDER } from '@/components/groups/modes';
 import { PageHeader } from '@/components/layout/PageHeader';
 import { DrilldownStat } from '@/components/stats/DrilldownStat';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -51,7 +51,7 @@ function Stat({
 
 function GroupCard({ group }: { group: Group }) {
   const navigate = useNavigate();
-  const orderedModes = LANE_ORDER.filter(mode => group.modes.includes(mode));
+  const orderedModes = RUN_MODE_ORDER.filter(mode => group.modes.includes(mode));
   return (
     // A div (not a <button>) so the Runs/Errors stat tiles below can be their
     // own real, keyboard-accessible <button>s — a <button> may not contain

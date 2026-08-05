@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { BookPlus } from 'lucide-react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 
-import { useExperiments, useGroups, useRuns } from '@/api/hooks';
+import { useExperiments, useGroups, useRunCount, useRunFacets, useRuns } from '@/api/hooks';
 import type { Run, RunStatus } from '@/api/types';
 import { PageHeader } from '@/components/layout/PageHeader';
 import { AddToLookbookDialog } from '@/components/traces/AddToLookbookDialog';
@@ -24,6 +24,7 @@ import { traceDetailPath } from '@/constants/path';
 import { formatCost, formatDuration, formatTokens, shortTraceId, truncate } from '@/lib/format';
 
 export function TracesPage() {
+  const pageSize = 100;
   // Other pages (Groups, GroupDetail, Evals) drill down into Traces via
   // query params — read them once on mount to seed the initial filters. This
   // intentionally only applies on first render (lazy useState initializers);
@@ -40,6 +41,7 @@ export function TracesPage() {
   const [status, setStatus] = useState(() => searchParams.get('status') ?? '');
   const [experimentId, setExperimentId] = useState('');
   const [search, setSearch] = useState(() => searchParams.get('search') ?? '');
+  const [offset, setOffset] = useState(0);
   const navigate = useNavigate();
 
   // Multi-select for the "Add to Lookbook" bulk action (ticket #3). Keyed by
@@ -54,25 +56,30 @@ export function TracesPage() {
   // longer see (and can't tell are still selected).
   useEffect(() => {
     setSelected(new Set());
+  }, [source, status, experimentId, search, offset]);
+
+  useEffect(() => {
+    setOffset(0);
   }, [source, status, experimentId, search]);
 
-  const runsQuery = useRuns({
+  const filters = {
     agent_id: source.kind === 'agent' ? source.id : undefined,
     group_id: source.kind === 'group' ? source.id : undefined,
     status: (status || undefined) as RunStatus | undefined,
     experiment_id: experimentId || undefined,
-    limit: 500,
-  });
-  // Unfiltered fetch drives the filter options so selects don't collapse to
-  // the currently-selected value.
-  const allRunsQuery = useRuns({ limit: 500 });
+    search: search || undefined,
+  };
+  const runsQuery = useRuns({ ...filters, offset, limit: pageSize });
+  const runCountQuery = useRunCount(filters);
+  const facetsQuery = useRunFacets();
   const experimentsQuery = useExperiments();
   const groupsQuery = useGroups();
 
   const agentOptions = useMemo(() => {
-    const ids = new Set((allRunsQuery.data ?? []).map(run => run.agent_id));
+    const ids = new Set(facetsQuery.data?.agent_ids ?? []);
+    for (const run of runsQuery.data ?? []) ids.add(run.agent_id);
     return [...ids].sort().map(id => ({ value: id, label: id }));
-  }, [allRunsQuery.data]);
+  }, [facetsQuery.data, runsQuery.data]);
 
   const groupOptions = useMemo(() => {
     return (groupsQuery.data ?? [])
@@ -83,23 +90,17 @@ export function TracesPage() {
   const experimentOptions = useMemo(() => {
     const ids = new Set<string>();
     for (const experiment of experimentsQuery.data ?? []) ids.add(experiment.experiment_id);
-    for (const run of allRunsQuery.data ?? []) {
+    for (const id of facetsQuery.data?.experiment_ids ?? []) ids.add(id);
+    for (const run of runsQuery.data ?? []) {
       if (run.experiment_id) ids.add(run.experiment_id);
     }
     return [...ids].sort().map(id => ({ value: id, label: id }));
-  }, [experimentsQuery.data, allRunsQuery.data]);
+  }, [experimentsQuery.data, facetsQuery.data, runsQuery.data]);
 
-  const rows = useMemo(() => {
-    const runs = runsQuery.data ?? [];
-    const needle = search.trim().toLowerCase();
-    if (!needle) return runs;
-    return runs.filter(
-      run =>
-        run.trace_id.toLowerCase().includes(needle) ||
-        (run.input ?? '').toLowerCase().includes(needle) ||
-        (run.output ?? '').toLowerCase().includes(needle)
-    );
-  }, [runsQuery.data, search]);
+  const rows = runsQuery.data ?? [];
+  const totalRuns = runCountQuery.data?.count ?? rows.length;
+  const firstVisible = totalRuns === 0 ? 0 : offset + 1;
+  const lastVisible = Math.min(offset + rows.length, totalRuns);
 
   const runKey = (run: Run) => `${run.trace_id}:${run.root_span_id ?? ''}`;
   const allSelected = rows.length > 0 && rows.every(run => selected.has(runKey(run)));
@@ -157,7 +158,11 @@ export function TracesPage() {
           className="h-8 max-w-72 text-xs"
         />
         <span className="ml-auto text-xs text-muted-foreground">
-          {runsQuery.isLoading ? 'Loading…' : `${rows.length} runs`}
+          {runsQuery.isLoading
+            ? 'Loading…'
+            : totalRuns > pageSize
+              ? `${firstVisible}–${lastVisible} of ${totalRuns} runs`
+              : `${totalRuns} runs`}
         </span>
       </div>
 
@@ -275,6 +280,30 @@ export function TracesPage() {
           </Table>
         )}
       </div>
+
+      {totalRuns > pageSize ? (
+        <div className="mt-3 flex items-center justify-end gap-2 text-xs text-muted-foreground">
+          <Button
+            variant="secondary"
+            size="sm"
+            disabled={offset === 0 || runsQuery.isFetching}
+            onClick={() => setOffset(current => Math.max(0, current - pageSize))}
+          >
+            Newer
+          </Button>
+          <span>
+            {firstVisible}–{lastVisible} of {totalRuns}
+          </span>
+          <Button
+            variant="secondary"
+            size="sm"
+            disabled={lastVisible >= totalRuns || runsQuery.isFetching}
+            onClick={() => setOffset(current => current + pageSize)}
+          >
+            Older
+          </Button>
+        </div>
+      ) : null}
 
       <AddToLookbookDialog
         traces={rows

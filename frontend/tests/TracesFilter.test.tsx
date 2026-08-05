@@ -106,6 +106,45 @@ describe('Traces unified Agent/Group filter', () => {
       expect(screen.queryByText('What is the forecast?')).not.toBeInTheDocument()
     );
   });
+
+  it('paginates on the server so runs beyond the first page stay accessible', async () => {
+    server.use(
+      http.get('*/api/run-count', () => HttpResponse.json({ count: 101 })),
+      http.get('*/api/runs', ({ request }) => {
+        const offset = Number(new URL(request.url).searchParams.get('offset') ?? 0);
+        return HttpResponse.json(offset === 100 ? [groupRun] : [baseRun]);
+      })
+    );
+
+    renderApp('/traces');
+
+    expect(await screen.findByText('What is the forecast?')).toBeInTheDocument();
+    expect(screen.getAllByText('1–1 of 101 runs')).not.toHaveLength(0);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Older' }));
+
+    expect(await screen.findByText('Group-scoped forecast run')).toBeInTheDocument();
+    expect(screen.getByText('101–101 of 101')).toBeInTheDocument();
+  });
+
+  it('sends trace search to the server instead of filtering only the current page', async () => {
+    let search = '';
+    server.use(
+      http.get('*/api/runs', ({ request }) => {
+        search = new URL(request.url).searchParams.get('search') ?? '';
+        return HttpResponse.json([baseRun]);
+      })
+    );
+
+    renderApp('/traces');
+    await screen.findByText('What is the forecast?');
+
+    fireEvent.change(screen.getByPlaceholderText('Filter by input, output, or trace id…'), {
+      target: { value: 'forecast' },
+    });
+
+    await waitFor(() => expect(search).toBe('forecast'));
+  });
 });
 
 describe('Traces list custom name + Version column removal', () => {

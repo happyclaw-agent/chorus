@@ -1,4 +1,4 @@
-import type { RunMode } from '@/api/types';
+import type { RunLane, RunMode } from '@/api/types';
 
 /**
  * Presentation metadata for the three lifecycle lanes. Class strings are
@@ -6,7 +6,7 @@ import type { RunMode } from '@/api/types';
  * Colors use dr-ui reserved chart tokens only.
  */
 export const MODE_META: Record<
-  RunMode,
+  RunLane,
   { label: string; laneLabel: string; dot: string; chip: string; text: string }
 > = {
   dev: {
@@ -30,10 +30,20 @@ export const MODE_META: Record<
     chip: 'border-chart-2/40 text-chart-2',
     text: 'text-chart-2',
   },
+  unknown: {
+    label: 'unknown',
+    laneLabel: 'Unclassified',
+    dot: 'bg-muted-foreground',
+    chip: 'border-border text-muted-foreground',
+    text: 'text-muted-foreground',
+  },
 };
 
-/** dev → ci → prod, the left-to-right lane progression. */
-export const LANE_ORDER: RunMode[] = ['dev', 'ci', 'prod'];
+/** Recognized lifecycle modes shown on group summary cards. */
+export const RUN_MODE_ORDER: RunMode[] = ['dev', 'ci', 'prod'];
+
+/** Lifecycle progression followed by explicitly unclassified traces. */
+export const LANE_ORDER: RunLane[] = [...RUN_MODE_ORDER, 'unknown'];
 
 export function isRunMode(value: string): value is RunMode {
   return value === 'dev' || value === 'ci' || value === 'prod';
