@@ -17,8 +17,8 @@ def test_root_serves_built_chorus_react_application(tmp_path):
     assert response.status_code == 200
     assert "Chorus — Agent Quality" in response.text
     assert 'id="root"' in response.text
-    assert 'base href="/"' in response.text
-    assert "./assets/index-" in response.text
+    assert "/assets/index-" in response.text
+    assert "<base " not in response.text
 
 
 def test_spa_routes_serve_the_same_application_shell(tmp_path):
@@ -37,9 +37,10 @@ def test_spa_shell_supports_asgi_root_path_deployments(tmp_path):
     html = client.get("/runs").text
 
     assert 'window.ENV = {"BASE_PATH": "/chorus/"}' in html
-    assert 'base href="/chorus/"' in html
-    assert 'src="./assets/' in html
-    assert 'href="./assets/' in html
+    assert 'src="/chorus/assets/' in html
+    assert 'href="/chorus/assets/' in html
+    assert 'href="/chorus/chorus-mark.svg"' in html
+    assert "<base " not in html
 
 
 def test_nested_spa_routes_load_assets_from_the_application_root(tmp_path):
@@ -47,9 +48,10 @@ def test_nested_spa_routes_load_assets_from_the_application_root(tmp_path):
 
     html = client.get("/traces/example").text
 
-    assert 'base href="/"' in html
-    assert 'src="./assets/' in html
-    assert 'href="./assets/' in html
+    assert 'src="/assets/' in html
+    assert 'href="/assets/' in html
+    assert 'href="/chorus-mark.svg"' in html
+    assert "<base " not in html
 
 
 def test_built_ui_keeps_restored_navigation_and_chorus_branding():

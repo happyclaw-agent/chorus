@@ -10,7 +10,6 @@ import threading
 import uuid
 from collections import Counter
 from collections.abc import Mapping, Sequence
-from html import escape
 from pathlib import Path
 from typing import Any
 
@@ -413,13 +412,14 @@ def create_app(
         base_path = f"{root_path}/" if root_path else "/"
         environment = json.dumps({"BASE_PATH": base_path}).replace("<", "\\u003c")
         html = STATIC_INDEX.read_text(encoding="utf-8")
-        escaped_base_path = escape(base_path, quote=True)
+        html = html.replace('src="./assets/', f'src="{base_path}assets/')
+        html = html.replace('href="./assets/', f'href="{base_path}assets/')
+        html = html.replace(
+            'href="./chorus-mark.svg"', f'href="{base_path}chorus-mark.svg"'
+        )
         html = html.replace(
             "<head>",
-            (
-                f'<head>\n    <base href="{escaped_base_path}" />'
-                f"\n    <script>window.ENV = {environment};</script>"
-            ),
+            f"<head>\n    <script>window.ENV = {environment};</script>",
             1,
         )
         return HTMLResponse(html)
