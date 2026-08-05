@@ -1,5 +1,6 @@
 from abbrivio.deepeval import (
     export_deepeval_summary,
+    export_evaluation_results,
     load_evaluation_cases,
     load_evaluation_results,
 )
@@ -199,3 +200,24 @@ def test_invalid_result_batch_does_not_append_partial_experiment(tmp_path):
     assert store.read("eval_runs") == []
     assert store.read("eval_cases") == []
     assert store.read("eval_results") == []
+
+
+def test_separate_result_exports_do_not_reuse_generated_ids(tmp_path):
+    store = SidecarStore(tmp_path)
+
+    first = export_evaluation_results(
+        store,
+        "run-1",
+        [{"example_id": "example-1", "inputs": {"message": "first"}}],
+    )
+    second = export_evaluation_results(
+        store,
+        "run-1",
+        [{"example_id": "example-2", "inputs": {"message": "second"}}],
+    )
+
+    assert first[0]["result_id"] != second[0]["result_id"]
+    assert {row["example_id"] for row in load_evaluation_results(store, "run-1")} == {
+        "example-1",
+        "example-2",
+    }

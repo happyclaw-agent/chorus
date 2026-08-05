@@ -186,12 +186,16 @@ def _prepare_evaluation_results(
     dataset: str,
 ) -> list[tuple[dict[str, Any], dict[str, Any]]]:
     prepared: list[tuple[dict[str, Any], dict[str, Any]]] = []
-    for position, value in enumerate(results):
+    for value in results:
         result = dict(value)
-        result_id = str(
-            result.get("result_id")
-            or uuid.uuid5(uuid.NAMESPACE_URL, f"{run_id}:result:{position}")
-        )
+        explicit_example_id = result.get("example_id")
+        result_id = str(result.get("result_id") or "")
+        if not result_id:
+            result_id = str(
+                uuid.uuid5(uuid.NAMESPACE_URL, f"{run_id}:result:{explicit_example_id}")
+                if explicit_example_id
+                else uuid.uuid4()
+            )
         example_id = str(result.get("example_id") or result_id)
         result_dataset = str(result.get("dataset") or dataset)
         inputs = result.get("inputs") or {}
