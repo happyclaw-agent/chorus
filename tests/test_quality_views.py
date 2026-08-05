@@ -550,6 +550,24 @@ def test_removing_last_group_member_keeps_group_available_for_readding(tmp_path)
     assert restored.json()["group"]["agent_ids"] == ["example-agent"]
 
 
+def test_adding_group_member_preserves_existing_friendly_name(tmp_path):
+    trace_store = OtlpJsonlStore(tmp_path / "traces.otlp.jsonl")
+    AbbrivioCompletionObserver(
+        OtlpJsonlSpanExporter(trace_store),
+        resource={"service.name": "service-a"},
+        app_attributes={
+            "abbrivio.group.id": "group-a",
+            "abbrivio.group.name": "Friendly Group",
+        },
+    )(Observation())
+    client = TestClient(create_app(tmp_path, trace_store=trace_store))
+
+    response = client.post("/api/groups/group-a/agents", json={"agent_id": "service-a"})
+
+    assert response.status_code == 200
+    assert response.json()["group"]["group_name"] == "Friendly Group"
+
+
 def test_runs_support_server_side_search_count_and_pagination(tmp_path):
     trace_store = OtlpJsonlStore(tmp_path / "traces.otlp.jsonl")
     exporter = OtlpJsonlSpanExporter(trace_store)
@@ -608,6 +626,14 @@ def test_invalid_otlp_jsonl_import_is_validated_before_append(tmp_path):
 
     assert response.status_code == 422
     assert corpus.read_text(encoding="utf-8") == before
+
+
+def test_corpus_import_rejects_missing_or_blank_path(tmp_path):
+    client, _sidecars, _reference = _client_with_trace(tmp_path)
+
+    for body in ({}, {"path": "   "}):
+        response = client.post("/api/corpora", json=body)
+        assert response.status_code == 422
 
 
 def test_trace_metadata_is_append_only_and_visible_in_runs(tmp_path):

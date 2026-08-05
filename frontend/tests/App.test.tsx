@@ -8,6 +8,7 @@ import { App } from '../src/App';
 import { api } from '../src/api/client';
 import { ThemeProvider } from '../src/theme/theme-provider';
 import { server } from './__mocks__/node';
+import { getBaseUrl } from '../src/lib/utils';
 
 function renderApp(initialPath = '/') {
   const queryClient = new QueryClient({
@@ -109,5 +110,16 @@ describe('Corpus-wide run loading', () => {
 
     await expect(api.getAllRuns()).resolves.toHaveLength(1001);
     expect(offsets).toEqual([0, 1000]);
+  });
+});
+
+describe('Application base paths', () => {
+  it('keeps the full notebook proxy prefix without overriding an injected base path', () => {
+    expect(getBaseUrl('/notebook-sessions/session-1/ports/5173/traces', undefined)).toBe(
+      '/notebook-sessions/session-1/ports/5173/'
+    );
+    expect(getBaseUrl('/notebook-sessions/session-1/ports/5173/traces', '/chorus/')).toBe(
+      '/chorus/'
+    );
   });
 });

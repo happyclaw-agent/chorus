@@ -36,8 +36,17 @@ def test_spa_shell_supports_asgi_root_path_deployments(tmp_path):
     html = client.get("/runs").text
 
     assert 'window.ENV = {"BASE_PATH": "/chorus/"}' in html
-    assert 'src="./assets/' in html
-    assert 'href="./assets/' in html
+    assert 'src="/chorus/assets/' in html
+    assert 'href="/chorus/assets/' in html
+
+
+def test_nested_spa_routes_load_assets_from_the_application_root(tmp_path):
+    client = TestClient(create_app(tmp_path))
+
+    html = client.get("/traces/example").text
+
+    assert 'src="/assets/' in html
+    assert 'href="/assets/' in html
 
 
 def test_built_ui_keeps_restored_navigation_and_chorus_branding():

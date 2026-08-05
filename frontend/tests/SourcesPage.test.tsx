@@ -30,6 +30,20 @@ describe('SourcesPage', () => {
     expect(screen.getAllByText('Ready').length).toBeGreaterThan(0);
   });
 
+  it('includes the configured application prefix in the OTLP receiver URL', async () => {
+    const previousEnvironment = window.ENV;
+    try {
+      window.ENV = { BASE_PATH: '/chorus/' };
+      renderSources();
+
+      expect(await screen.findByTestId('otlp-endpoint')).toHaveTextContent(
+        `${window.location.origin}/chorus/v1/traces`
+      );
+    } finally {
+      window.ENV = previousEnvironment;
+    }
+  });
+
   it('imports an OTLP file through the canonical corpus endpoint', async () => {
     renderSources();
 

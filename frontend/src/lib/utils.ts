@@ -6,19 +6,31 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
-export function getBaseUrl() {
-  let basename = window.ENV?.BASE_PATH;
-  // Adjust API URL based on the environment
-  const pathname: string = window.location.pathname;
+function normalizedBasePath(path: string): string {
+  const value = path.trim();
+  if (!value || value === '/') return '/';
+  return `/${value.replace(/^\/+|\/+$/g, '')}/`;
+}
 
-  if (pathname?.includes('notebook-sessions') && pathname?.includes(`/${VITE_DEFAULT_PORT}/`)) {
-    // ex:. /notebook-sessions/{id}/ports/5137/
-    basename = import.meta.env.BASE_URL;
+export function getBaseUrl(
+  pathname: string = window.location.pathname,
+  configuredBasePath: string | undefined = window.ENV?.BASE_PATH
+) {
+  if (configuredBasePath) return normalizedBasePath(configuredBasePath);
+
+  const marker = `/${VITE_DEFAULT_PORT}/`;
+  const markerIndex = pathname.indexOf(marker);
+  if (pathname.includes('notebook-sessions') && markerIndex >= 0) {
+    return normalizedBasePath(pathname.slice(0, markerIndex + marker.length));
   }
+  return '/';
+}
 
-  return basename ? basename : '/';
+export function getAppUrl(path: string) {
+  const relativePath = path.replace(/^\/+/, '');
+  return new URL(`${getBaseUrl()}${relativePath}`, `${window.location.origin}/`).toString();
 }
 
 export function getApiUrl() {
-  return `${window.location.origin}${getBaseUrl()}api`;
+  return getAppUrl('api');
 }

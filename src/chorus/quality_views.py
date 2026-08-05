@@ -1066,12 +1066,17 @@ def create_quality_router(
             raise HTTPException(status_code=422, detail="agent_id is required")
         if not any(run["agent_id"] == agent_id for run in view.runs(limit=100_000)):
             raise HTTPException(status_code=404, detail="agent not found")
+        current = view.group_detail(group_id)
+        group_name = str(
+            body.get("group_name")
+            or (current["group"]["group_name"] if current else group_id)
+        )
         sidecars.append(
             "group_overrides",
             {
                 "type": "add_agent",
                 "group_id": group_id,
-                "group_name": str(body.get("group_name") or group_id),
+                "group_name": group_name,
                 "agent_id": agent_id,
             },
         )
@@ -1332,7 +1337,12 @@ def create_quality_router(
 
     @router.post("/corpora")
     def import_corpus(body: JsonObject) -> dict[str, Any]:
-        source = Path(str(body.get("path") or "")).expanduser().resolve()
+        raw_path = body.get("path")
+        if not isinstance(raw_path, str) or not raw_path.strip():
+            raise HTTPException(
+                status_code=422, detail="path must be a non-empty string"
+            )
+        source = Path(raw_path.strip()).expanduser().resolve()
         candidates: list[Path]
         if source.is_file():
             candidates = [source]

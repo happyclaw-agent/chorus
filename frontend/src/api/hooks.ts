@@ -107,6 +107,7 @@ export function useAddAgentToGroup() {
     onSuccess: (_result, variables) => {
       void queryClient.invalidateQueries({ queryKey: ['groups'] });
       void queryClient.invalidateQueries({ queryKey: ['group', variables.groupId] });
+      void queryClient.invalidateQueries({ queryKey: ['group-graph', variables.groupId] });
     },
   });
 }
@@ -124,6 +125,7 @@ export function useRemoveAgentFromGroup() {
     onSuccess: (_result, variables) => {
       void queryClient.invalidateQueries({ queryKey: ['groups'] });
       void queryClient.invalidateQueries({ queryKey: ['group', variables.groupId] });
+      void queryClient.invalidateQueries({ queryKey: ['group-graph', variables.groupId] });
     },
   });
 }

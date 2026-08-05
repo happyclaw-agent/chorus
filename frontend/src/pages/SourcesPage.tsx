@@ -25,7 +25,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { cn } from '@/lib/utils';
+import { cn, getAppUrl } from '@/lib/utils';
 
 interface Result {
   kind: 'ok' | 'error';
@@ -65,7 +65,7 @@ function OtlpCard() {
   const { data: status } = useStatus();
   const [copied, setCopied] = useState(false);
   const endpoint = status?.otlp_endpoint ?? '/v1/traces';
-  const fullUrl = `${window.location.origin}${endpoint}`;
+  const fullUrl = getAppUrl(endpoint);
 
   const copy = () => {
     void navigator.clipboard?.writeText(fullUrl).then(() => {
