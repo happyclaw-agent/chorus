@@ -13,6 +13,8 @@ export interface Run {
   agent_version: string | null;
   experiment_id: string | null;
   example_id: string | null;
+  /** Eval-suite identity when the traced harness supplied one. */
+  eval_dataset: string | null;
   /** Agent-group membership (the top-level organizing concept). */
   group_id: string | null;
   group_name: string | null;

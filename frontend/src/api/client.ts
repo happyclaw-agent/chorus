@@ -48,6 +48,10 @@ export class ApiError extends Error {
 type QueryParams = Record<string, string | number | undefined>;
 let tokenPrompt: Promise<string | null> | null = null;
 
+function needsQueryGroupRoute(groupId: string): boolean {
+  return groupId.includes('/') || groupId.includes('\\');
+}
+
 async function promptForApiToken(): Promise<string | null> {
   if (!tokenPrompt) {
     tokenPrompt = Promise.resolve().then(() => {
@@ -130,34 +134,57 @@ async function request<T>(
 export const api = {
   getRuns: (filters: RunFilters = {}) => request<Run[]>('/runs', { params: { ...filters } }),
   getGroups: () => request<Group[]>('/groups'),
-  getGroup: (groupId: string) => request<GroupDetail>(`/groups/${groupId}`),
-  getGroupGraph: (groupId: string) => request<ComponentGraph>(`/groups/${groupId}/graph`),
+  getGroup: (groupId: string) =>
+    needsQueryGroupRoute(groupId)
+      ? request<GroupDetail>('/group-by-id', { params: { group_id: groupId } })
+      : request<GroupDetail>(`/groups/${encodeURIComponent(groupId)}`),
+  getGroupGraph: (groupId: string) =>
+    needsQueryGroupRoute(groupId)
+      ? request<ComponentGraph>('/group-by-id/graph', { params: { group_id: groupId } })
+      : request<ComponentGraph>(`/groups/${encodeURIComponent(groupId)}/graph`),
   /**
    * DELETE /api/groups/{id} — hide an Agent Group. Reversible: it appends a
    * `hide_group` override to the inbox-global overrides sidecar, never
    * mutates trace files. 404s if the group isn't currently visible.
    */
   hideGroup: (groupId: string) =>
-    request<HideGroupResult>(`/groups/${groupId}`, { method: 'DELETE' }),
+    needsQueryGroupRoute(groupId)
+      ? request<HideGroupResult>('/group-by-id', {
+          method: 'DELETE',
+          params: { group_id: groupId },
+        })
+      : request<HideGroupResult>(`/groups/${encodeURIComponent(groupId)}`, { method: 'DELETE' }),
   /**
    * POST /api/groups/{id}/agents — add an agent to an Agent Group. Wins over
    * both trace-stamped and groups.jsonl-sidecar membership; can create a
    * brand-new group_id. Returns the updated group detail.
    */
   addAgentToGroup: (groupId: string, agentId: string) =>
-    request<GroupDetail>(`/groups/${groupId}/agents`, {
-      method: 'POST',
-      body: { agent_id: agentId },
-    }),
+    needsQueryGroupRoute(groupId)
+      ? request<GroupDetail>('/group-by-id/agents', {
+          method: 'POST',
+          params: { group_id: groupId },
+          body: { agent_id: agentId },
+        })
+      : request<GroupDetail>(`/groups/${encodeURIComponent(groupId)}/agents`, {
+          method: 'POST',
+          body: { agent_id: agentId },
+        }),
   /**
    * DELETE /api/groups/{id}/agents/{agentId} — remove an agent from one
    * specific Agent Group; membership in any other group is untouched.
    * Returns the updated group detail.
    */
   removeAgentFromGroup: (groupId: string, agentId: string) =>
-    request<GroupDetail>(`/groups/${groupId}/agents/${encodeURIComponent(agentId)}`, {
-      method: 'DELETE',
-    }),
+    needsQueryGroupRoute(groupId) || needsQueryGroupRoute(agentId)
+      ? request<GroupDetail>('/group-by-id/agents', {
+          method: 'DELETE',
+          params: { group_id: groupId, agent_id: agentId },
+        })
+      : request<GroupDetail>(
+          `/groups/${encodeURIComponent(groupId)}/agents/${encodeURIComponent(agentId)}`,
+          { method: 'DELETE' }
+        ),
   getTrace: (traceId: string, rootSpanId?: string) =>
     request<TraceDetail>(`/ui/traces/${traceId}`, { params: { root_span_id: rootSpanId } }),
   getTraceLogs: (traceId: string, rootSpanId?: string) =>

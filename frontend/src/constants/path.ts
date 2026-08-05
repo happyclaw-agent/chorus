@@ -13,7 +13,7 @@ export const traceDetailPath = (traceId: string, rootSpanId?: string | null) => 
   if (!rootSpanId) return `/traces/${traceId}`;
   return `/traces/${traceId}?${new URLSearchParams({ root_span_id: rootSpanId })}`;
 };
-export const groupDetailPath = (groupId: string) => `/groups/${groupId}`;
+export const groupDetailPath = (groupId: string) => `/groups/${encodeURIComponent(groupId)}`;
 
 /** Traces filtered to one group (read by TracesPage's useSearchParams
  * initializer) to pre-select this group in the unified Agent/Group source

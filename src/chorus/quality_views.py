@@ -53,6 +53,8 @@ def _percentile(values: Sequence[float], percentile: float) -> float:
 
 
 def _complete_sum(rows: Sequence[Mapping[str, Any]], field: str) -> float | int | None:
+    if not rows:
+        return None
     values = [row.get(field) for row in rows]
     if any(value is None for value in values):
         return None
@@ -320,46 +322,49 @@ class QualityView:
             span_ids,
         )
         models: set[str] = set()
-        input_tokens = 0
-        output_tokens = 0
-        cache_read_tokens = 0
-        cache_creation_tokens = 0
-        has_input_tokens = False
-        has_output_tokens = False
-        has_cache_read_tokens = False
-        has_cache_creation_tokens = False
-        cost_usd = 0.0
-        has_priced_cost = False
+        telemetry: list[dict[str, Any]] = []
         for span in spans:
             attributes = span.get("attributes") or {}
             for key in ("gen_ai.response.model", "gen_ai.request.model"):
                 if attributes.get(key):
                     models.add(str(attributes[key]))
-            input_count = _integer(attributes.get("gen_ai.usage.input_tokens"))
-            if input_count is not None:
-                has_input_tokens = True
-                input_tokens += input_count
-            output_count = _integer(attributes.get("gen_ai.usage.output_tokens"))
-            if output_count is not None:
-                has_output_tokens = True
-                output_tokens += output_count
-            cache_read_count = _integer(
-                attributes.get("gen_ai.usage.cache_read_input_tokens")
-            )
-            if cache_read_count is not None:
-                has_cache_read_tokens = True
-                cache_read_tokens += cache_read_count
-            cache_creation_count = _integer(
-                attributes.get("gen_ai.usage.cache_creation_input_tokens")
-            )
-            if cache_creation_count is not None:
-                has_cache_creation_tokens = True
-                cache_creation_tokens += cache_creation_count
-            amount = _number(attributes.get("abbrivio.cost.amount"))
-            currency = str(attributes.get("abbrivio.cost.currency") or "USD").upper()
-            if amount is not None and amount >= 0 and currency == "USD":
-                has_priced_cost = True
-                cost_usd += amount
+            if (
+                _first(
+                    attributes,
+                    "gen_ai.operation.name",
+                    "gen_ai.response.model",
+                    "gen_ai.request.model",
+                    "gen_ai.usage.input_tokens",
+                    "gen_ai.usage.output_tokens",
+                    "abbrivio.cost.amount",
+                )
+                is not None
+            ):
+                amount = _number(attributes.get("abbrivio.cost.amount"))
+                currency = str(
+                    attributes.get("abbrivio.cost.currency") or "USD"
+                ).upper()
+                telemetry.append(
+                    {
+                        "input_tokens": _integer(
+                            attributes.get("gen_ai.usage.input_tokens")
+                        ),
+                        "output_tokens": _integer(
+                            attributes.get("gen_ai.usage.output_tokens")
+                        ),
+                        "cache_read_input_tokens": _integer(
+                            attributes.get("gen_ai.usage.cache_read_input_tokens")
+                        ),
+                        "cache_creation_input_tokens": _integer(
+                            attributes.get("gen_ai.usage.cache_creation_input_tokens")
+                        ),
+                        "cost_usd": (
+                            amount
+                            if amount is not None and amount >= 0 and currency == "USD"
+                            else None
+                        ),
+                    }
+                )
             if input_text is None:
                 input_text = _message_text(
                     _first(
@@ -381,6 +386,11 @@ class QualityView:
         meta = metadata.get(
             (trace_id, root_span_id), metadata.get((trace_id, None), {})
         )
+        input_tokens = _complete_sum(telemetry, "input_tokens")
+        output_tokens = _complete_sum(telemetry, "output_tokens")
+        cache_read_tokens = _complete_sum(telemetry, "cache_read_input_tokens")
+        cache_creation_tokens = _complete_sum(telemetry, "cache_creation_input_tokens")
+        cost_usd = _complete_sum(telemetry, "cost_usd")
         return {
             "trace_id": trace_id,
             "root_span_id": root_span_id,
@@ -402,6 +412,12 @@ class QualityView:
                 "evaluation.case.id",
                 "abbrivio.example.id",
             ),
+            "eval_dataset": _first(
+                root_attributes,
+                "evaluation.dataset.name",
+                "evaluation.dataset",
+                "abbrivio.dataset",
+            ),
             "group_id": str(group_id) if group_id is not None else None,
             "group_name": str(group_name) if group_name is not None else None,
             "mode": mode,
@@ -412,15 +428,11 @@ class QualityView:
             else "ok",
             "models": sorted(models),
             "services": services,
-            "input_tokens": input_tokens if has_input_tokens else None,
-            "output_tokens": output_tokens if has_output_tokens else None,
-            "cache_read_input_tokens": (
-                cache_read_tokens if has_cache_read_tokens else None
-            ),
-            "cache_creation_input_tokens": (
-                cache_creation_tokens if has_cache_creation_tokens else None
-            ),
-            "cost_usd": round(cost_usd, 10) if has_priced_cost else None,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "cache_read_input_tokens": cache_read_tokens,
+            "cache_creation_input_tokens": cache_creation_tokens,
+            "cost_usd": round(float(cost_usd), 10) if cost_usd is not None else None,
             "latency_ms": _number(trace.get("latency_ms")),
             "started_at": _iso_from_nanos(trace.get("start_time_unix_nano")),
             "ended_at": _iso_from_nanos(trace.get("end_time_unix_nano")),
@@ -909,49 +921,14 @@ def create_quality_router(
     def groups() -> list[dict[str, Any]]:
         return view.groups()
 
-    @router.get("/groups/{group_id}")
-    def group_detail(group_id: str) -> dict[str, Any]:
-        detail = view.group_detail(group_id)
-        if detail is None:
-            raise HTTPException(status_code=404, detail="group not found")
-        return detail
-
-    @router.get("/groups/{group_id}/graph")
+    @router.get("/groups/{group_id:path}/graph")
     def group_graph(group_id: str) -> dict[str, Any]:
         graph = view.group_graph(group_id)
         if graph is None:
             raise HTTPException(status_code=404, detail="group not found")
         return graph
 
-    @router.delete("/groups/{group_id}")
-    def hide_group(group_id: str) -> dict[str, Any]:
-        if view.group_detail(group_id) is None:
-            raise HTTPException(status_code=404, detail="group not found")
-        sidecars.append("group_overrides", {"type": "hide_group", "group_id": group_id})
-        return {"group_id": group_id, "hidden": True}
-
-    @router.post("/groups/{group_id}/agents")
-    def add_agent(group_id: str, body: JsonObject) -> dict[str, Any]:
-        agent_id = str(body.get("agent_id") or "").strip()
-        if not agent_id:
-            raise HTTPException(status_code=422, detail="agent_id is required")
-        if not any(run["agent_id"] == agent_id for run in view.runs(limit=100_000)):
-            raise HTTPException(status_code=404, detail="agent not found")
-        sidecars.append(
-            "group_overrides",
-            {
-                "type": "add_agent",
-                "group_id": group_id,
-                "group_name": str(body.get("group_name") or group_id),
-                "agent_id": agent_id,
-            },
-        )
-        detail = view.group_detail(group_id)
-        if detail is None:
-            raise HTTPException(status_code=404, detail="group not found")
-        return detail
-
-    @router.delete("/groups/{group_id}/agents/{agent_id}")
+    @router.delete("/groups/{group_id:path}/agents/{agent_id}")
     def remove_agent(group_id: str, agent_id: str) -> dict[str, Any]:
         sidecars.append(
             "group_overrides",
@@ -979,6 +956,61 @@ def create_quality_router(
                 "lanes": {"dev": [], "ci": [], "prod": []},
             }
         return detail
+
+    @router.post("/groups/{group_id:path}/agents")
+    def add_agent(group_id: str, body: JsonObject) -> dict[str, Any]:
+        agent_id = str(body.get("agent_id") or "").strip()
+        if not agent_id:
+            raise HTTPException(status_code=422, detail="agent_id is required")
+        if not any(run["agent_id"] == agent_id for run in view.runs(limit=100_000)):
+            raise HTTPException(status_code=404, detail="agent not found")
+        sidecars.append(
+            "group_overrides",
+            {
+                "type": "add_agent",
+                "group_id": group_id,
+                "group_name": str(body.get("group_name") or group_id),
+                "agent_id": agent_id,
+            },
+        )
+        detail = view.group_detail(group_id)
+        if detail is None:
+            raise HTTPException(status_code=404, detail="group not found")
+        return detail
+
+    @router.delete("/groups/{group_id:path}")
+    def hide_group(group_id: str) -> dict[str, Any]:
+        if view.group_detail(group_id) is None:
+            raise HTTPException(status_code=404, detail="group not found")
+        sidecars.append("group_overrides", {"type": "hide_group", "group_id": group_id})
+        return {"group_id": group_id, "hidden": True}
+
+    @router.get("/groups/{group_id:path}")
+    def group_detail(group_id: str) -> dict[str, Any]:
+        detail = view.group_detail(group_id)
+        if detail is None:
+            raise HTTPException(status_code=404, detail="group not found")
+        return detail
+
+    @router.get("/group-by-id")
+    def group_detail_by_id(group_id: str) -> dict[str, Any]:
+        return group_detail(group_id)
+
+    @router.get("/group-by-id/graph")
+    def group_graph_by_id(group_id: str) -> dict[str, Any]:
+        return group_graph(group_id)
+
+    @router.delete("/group-by-id")
+    def hide_group_by_id(group_id: str) -> dict[str, Any]:
+        return hide_group(group_id)
+
+    @router.post("/group-by-id/agents")
+    def add_agent_by_id(group_id: str, body: JsonObject) -> dict[str, Any]:
+        return add_agent(group_id, body)
+
+    @router.delete("/group-by-id/agents")
+    def remove_agent_by_id(group_id: str, agent_id: str) -> dict[str, Any]:
+        return remove_agent(group_id, agent_id)
 
     @router.get("/ui/traces/{trace_id}")
     def trace_detail(trace_id: str, root_span_id: str | None = None) -> dict[str, Any]:

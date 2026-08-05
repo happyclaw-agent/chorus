@@ -47,6 +47,7 @@ function example1(dataset = 'planning-lookbook'): MockExample {
     expected: 'Grounded scenario result.',
     metadata: {
       source_trace: 'abc123def4567890',
+      source_root_span: 'feedfacecafebeef',
       promoted_by: 'jj',
       graders: ['ground_truth_tests'],
       assertions: 2,
@@ -67,6 +68,24 @@ function example2(dataset = 'planning-lookbook'): MockExample {
 function datasetsPayload(name: string, examples: MockExample[]) {
   return [{ name, corpus: '/tmp/corpus', example_count: examples.length, examples }];
 }
+
+describe('Eval case source lineage', () => {
+  it('keeps the source root when linking a multi-root trace', async () => {
+    server.use(
+      http.get('*/api/datasets', () =>
+        HttpResponse.json(datasetsPayload('planning-lookbook', [example1()]))
+      )
+    );
+    renderApp();
+
+    const link = await screen.findByRole('link', { name: 'abc123de' });
+
+    expect(link).toHaveAttribute(
+      'href',
+      '/traces/abc123def4567890?root_span_id=feedfacecafebeef'
+    );
+  });
+});
 
 describe('Rename a Lookbook', () => {
   it('renames the dataset in place and the header/card follow the new name', async () => {

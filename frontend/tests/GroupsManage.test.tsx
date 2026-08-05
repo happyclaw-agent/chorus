@@ -77,6 +77,29 @@ const statsPayload = {
   totals: { runs: 4, cost_usd: 0.03, input_tokens: 300, output_tokens: 130 },
 };
 
+describe('Group routing', () => {
+  it('opens an OTLP group whose identifier contains a path separator', async () => {
+    const group = makeGroup({ group_id: 'team/agent', group_name: 'Team Agent' });
+    server.use(
+      http.get('*/api/groups', () => HttpResponse.json([group])),
+      http.get('*/api/group-by-id', () =>
+        HttpResponse.json({ group, lanes: emptyLanes })
+      ),
+      http.get('*/api/group-by-id/graph', () =>
+        HttpResponse.json({ group, nodes: [], edges: [] })
+      ),
+      http.get('*/api/stats', () => HttpResponse.json(statsPayload))
+    );
+    renderApp('/groups');
+
+    const card = (await screen.findByText('Team Agent')).closest('[role="button"]');
+    expect(card).not.toBeNull();
+    fireEvent.click(card!);
+
+    expect(await screen.findByRole('heading', { name: 'Team Agent' })).toBeInTheDocument();
+  });
+});
+
 describe('Hide an Agent Group', () => {
   it('hides the group via the confirm dialog and it disappears from the list', async () => {
     let hidden = false;

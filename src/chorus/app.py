@@ -473,7 +473,7 @@ def create_app(
                     "spans": len(spans),
                     "genai_calls": len(genai_spans),
                     "feedback": len(feedback),
-                    "eval_cases": len(sidecars.latest("eval_cases", "case_id")),
+                    "eval_cases": len(load_evaluation_cases(sidecars)),
                     "eval_runs": len(eval_runs),
                 },
                 "latency_ms": {
@@ -705,14 +705,6 @@ def create_app(
             span_id=selected_span_id,
             root_span_id=requested_root_id or derived_root_id,
         )
-        identity = ":".join(
-            (
-                reference.trace_id,
-                reference.span_id or reference.root_span_id or "trace",
-                profile.profile_id,
-                str(request.attributes.get("dataset") or "promoted-traces"),
-            )
-        )
         dataset = request.attributes.get("dataset")
         if dataset is not None and (
             not isinstance(dataset, str) or not dataset.strip()
@@ -724,9 +716,36 @@ def create_app(
             raise HTTPException(
                 status_code=422, detail="dataset cannot contain path separators"
             )
+        dataset_name = str(dataset or "promoted-traces")
+        selection_identity = reference.span_id or reference.root_span_id or "trace"
+        if requested_span_id is not None:
+            selection_identity = f"span:{selection_identity}"
+        identity_parts = [
+            reference.trace_id,
+            selection_identity,
+            profile.profile_id,
+        ]
+        if dataset_name != "promoted-traces":
+            identity_parts.append(dataset_name)
+        identity = ":".join(identity_parts)
+        case_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"chorus:{identity}"))
+        existing = next(
+            (
+                record
+                for record in load_evaluation_cases(sidecars)
+                if str(record.get("case_id") or "") == case_id
+                and str(
+                    (record.get("attributes") or {}).get("dataset") or "promoted-traces"
+                )
+                == dataset_name
+            ),
+            None,
+        )
+        if existing is not None:
+            return existing
         case = EvaluationCase(
             schema_version=1,
-            case_id=str(uuid.uuid5(uuid.NAMESPACE_URL, f"chorus:{identity}")),
+            case_id=case_id,
             name=request.name or f"trace-{trace_id[:12]}",
             input_text=input_text,
             actual_output=actual_output,

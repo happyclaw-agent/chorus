@@ -26,6 +26,10 @@ export default defineConfig({
                 target: 'http://127.0.0.1:8010',
                 changeOrigin: true,
             },
+            '/v1/traces': {
+                target: 'http://127.0.0.1:8010',
+                changeOrigin: true,
+            },
         },
     },
     test: {

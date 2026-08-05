@@ -33,14 +33,30 @@ import { PATHS, traceDetailPath } from '@/constants/path';
 import { shortTraceId, truncate } from '@/lib/format';
 import { cn } from '@/lib/utils';
 
-/** Latest traced execution per example_id. Quality verdicts live in eval runs. */
-function latestRunsByExample(runs: Run[]): Map<string, Run> {
+function caseKey(dataset: string, exampleId: string): string {
+  return `${dataset}\u0000${exampleId}`;
+}
+
+/** Latest traced execution per suite-local case identity. Quality verdicts live in eval runs. */
+function latestRunsByExample(runs: Run[], datasets: Dataset[]): Map<string, Run> {
   const map = new Map<string, Run>();
+  const datasetsByExample = new Map<string, string[]>();
+  for (const dataset of datasets) {
+    for (const example of dataset.examples) {
+      const names = datasetsByExample.get(example.example_id) ?? [];
+      names.push(dataset.name);
+      datasetsByExample.set(example.example_id, names);
+    }
+  }
   for (const run of runs) {
     if (!run.example_id) continue;
-    const existing = map.get(run.example_id);
+    const dataset = run.eval_dataset ?? datasetsByExample.get(run.example_id)?.[0];
+    const candidateDatasets = datasetsByExample.get(run.example_id) ?? [];
+    if (!dataset || (!run.eval_dataset && candidateDatasets.length !== 1)) continue;
+    const key = caseKey(dataset, run.example_id);
+    const existing = map.get(key);
     if (!existing || (run.started_at ?? '') > (existing.started_at ?? '')) {
-      map.set(run.example_id, run);
+      map.set(key, run);
     }
   }
   return map;
@@ -120,8 +136,10 @@ function DatasetCard({
   verdicts: Map<string, Run>;
   onSelectStatus: (status: StatusFilter) => void;
 }) {
-  const withRuns = dataset.examples.filter(e => verdicts.has(e.example_id));
-  const errored = withRuns.filter(e => verdicts.get(e.example_id)!.status === 'error').length;
+  const withRuns = dataset.examples.filter(e => verdicts.has(caseKey(dataset.name, e.example_id)));
+  const errored = withRuns.filter(
+    e => verdicts.get(caseKey(dataset.name, e.example_id))!.status === 'error'
+  ).length;
   const successful = withRuns.length - errored;
 
   return (
@@ -203,6 +221,7 @@ function ExampleRow({
 }) {
   const [open, setOpen] = useState(false);
   const sourceTrace = metadataString(example, 'source_trace');
+  const sourceRootSpan = metadataString(example, 'source_root_span');
   const promotedBy = metadataString(example, 'promoted_by');
   const graders = metadataGraders(example);
   const assertions = example.metadata?.['assertions'];
@@ -233,7 +252,7 @@ function ExampleRow({
             <span>
               trace{' '}
               <Link
-                to={traceDetailPath(sourceTrace)}
+                to={traceDetailPath(sourceTrace, sourceRootSpan)}
                 className="font-mono text-link hover:underline"
                 onClick={event => event.stopPropagation()}
               >
@@ -450,7 +469,10 @@ export function EvalsPage() {
   const latestEvalRun = evalRunsQuery.data?.[0];
   const selected = datasets.find(dataset => dataset.name === selectedName) ?? datasets[0] ?? null;
 
-  const verdicts = useMemo(() => latestRunsByExample(runsQuery.data ?? []), [runsQuery.data]);
+  const verdicts = useMemo(
+    () => latestRunsByExample(runsQuery.data ?? [], datasets),
+    [runsQuery.data, datasets]
+  );
 
   // Clicking a dataset's source-execution status filters this suite's own
   // Look table in place (rather than navigating to Traces, which has no
@@ -473,7 +495,7 @@ export function EvalsPage() {
     if (!selected) return [];
     if (statusFilter === 'all') return selected.examples;
     return selected.examples.filter(
-      example => verdicts.get(example.example_id)?.status === statusFilter
+      example => verdicts.get(caseKey(selected.name, example.example_id))?.status === statusFilter
     );
   }, [selected, statusFilter, verdicts]);
 
@@ -595,7 +617,7 @@ export function EvalsPage() {
                         <ExampleRow
                           key={example.example_id}
                           example={example}
-                          lastRun={verdicts.get(example.example_id)}
+                          lastRun={verdicts.get(caseKey(selected.name, example.example_id))}
                           datasetName={selected.name}
                         />
                       ))}

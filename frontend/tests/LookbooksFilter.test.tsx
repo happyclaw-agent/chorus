@@ -281,4 +281,55 @@ describe('Lookbooks in-place status filter', () => {
     expect(await screen.findByText(/No cases with a failed source execution/i)).toBeInTheDocument();
     expect(screen.queryByText('P1 input')).not.toBeInTheDocument();
   });
+
+  it('keeps source-run status scoped to a suite when case IDs are reused', async () => {
+    const sharedDatasets = ['suite-a', 'suite-b'].map(name => ({
+      name,
+      corpus: '/tmp/corpus',
+      example_count: 1,
+      examples: [
+        {
+          example_id: 'shared-case',
+          dataset: name,
+          input: `${name} input`,
+          expected: null,
+          metadata: null,
+        },
+      ],
+    }));
+    const base = runsPayload()[0];
+    server.use(
+      http.get('*/api/datasets', () => HttpResponse.json(sharedDatasets)),
+      http.get('*/api/runs', () =>
+        HttpResponse.json([
+          {
+            ...base,
+            trace_id: 'trace-suite-a',
+            example_id: 'shared-case',
+            eval_dataset: 'suite-a',
+            status: 'ok',
+          },
+          {
+            ...base,
+            trace_id: 'trace-suite-b',
+            example_id: 'shared-case',
+            eval_dataset: 'suite-b',
+            status: 'error',
+          },
+        ])
+      )
+    );
+    renderApp();
+
+    expect(await screen.findByText('suite-a input')).toBeInTheDocument();
+    expect(screen.getByTestId('lookbook-pass-count-suite-a')).toHaveTextContent('1');
+    expect(screen.getByTestId('lookbook-fail-count-suite-a')).toHaveTextContent('0');
+    expect(screen.getByTestId('lookbook-pass-count-suite-b')).toHaveTextContent('0');
+    expect(screen.getByTestId('lookbook-fail-count-suite-b')).toHaveTextContent('1');
+
+    fireEvent.click(screen.getByTestId('lookbook-fail-count-suite-b'));
+
+    expect(await screen.findByText('suite-b input')).toBeInTheDocument();
+    expect(screen.queryByText('suite-a input')).not.toBeInTheDocument();
+  });
 });

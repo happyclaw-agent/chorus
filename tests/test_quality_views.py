@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass, replace
 
 from fastapi.testclient import TestClient
@@ -105,6 +106,50 @@ def test_quality_ui_projects_groups_and_component_graph(tmp_path):
     assert graph["nodes"][0]["span_count"] == 1
 
 
+def test_group_routes_support_path_unsafe_otlp_group_ids(tmp_path):
+    trace_store = OtlpJsonlStore(tmp_path / "traces.otlp.jsonl")
+    AbbrivioCompletionObserver(
+        OtlpJsonlSpanExporter(trace_store),
+        resource={"service.name": "team/agent"},
+    )(Observation())
+    client = TestClient(create_app(tmp_path, trace_store=trace_store))
+
+    detail = client.get("/api/group-by-id", params={"group_id": "team/agent"})
+    graph = client.get("/api/group-by-id/graph", params={"group_id": "team/agent"})
+
+    assert detail.status_code == 200
+    assert detail.json()["group"]["group_id"] == "team/agent"
+    assert graph.status_code == 200
+    assert graph.json()["group"]["group_id"] == "team/agent"
+
+
+def test_incomplete_multi_span_usage_and_cost_remain_unknown(tmp_path):
+    trace_store = OtlpJsonlStore(tmp_path / "traces.otlp.jsonl")
+    exporter = OtlpJsonlSpanExporter(trace_store)
+    AbbrivioCompletionObserver(
+        exporter,
+        app_attributes={"abbrivio.cost.amount": 0.00042},
+    )(Observation())
+    AbbrivioCompletionObserver(exporter)(
+        replace(
+            Observation(),
+            span_id="33" * 8,
+            parent_span_id="22" * 8,
+            input_tokens=None,
+            output_tokens=None,
+            total_tokens=None,
+            cached_input_tokens=None,
+        )
+    )
+    client = TestClient(create_app(tmp_path, trace_store=trace_store))
+
+    run = client.get("/api/runs").json()[0]
+
+    assert run["input_tokens"] is None
+    assert run["output_tokens"] is None
+    assert run["cost_usd"] is None
+
+
 def test_hidden_groups_do_not_hide_their_traces(tmp_path):
     client, _sidecars, reference = _client_with_trace(tmp_path)
 
@@ -154,6 +199,43 @@ def test_same_trace_can_be_promoted_into_multiple_eval_suites(tmp_path):
     assert len(evaluation_cases) == 2
 
 
+def test_repeat_promotion_preserves_human_edited_expectation(tmp_path):
+    client, _sidecars, reference = _client_with_trace(tmp_path)
+    path = f"/api/traces/{reference.trace_id}/promote"
+    promoted = client.post(
+        path,
+        json={"attributes": {"dataset": "flex-golden"}},
+    ).json()
+    client.put(
+        f"/api/datasets/flex-golden/examples/{promoted['case_id']}",
+        json={"expected": "Human-reviewed answer"},
+    )
+
+    repeated = client.post(
+        path,
+        json={"attributes": {"dataset": "flex-golden"}},
+    )
+
+    assert repeated.status_code == 200
+    assert repeated.json()["case_id"] == promoted["case_id"]
+    assert repeated.json()["expected_output"] == "Human-reviewed answer"
+
+
+def test_default_promotion_keeps_pre_03_case_identity(tmp_path):
+    client, _sidecars, reference = _client_with_trace(tmp_path)
+    expected_identity = ":".join(
+        (reference.trace_id, reference.span_id, "otel.gen_ai.v1")
+    )
+    expected_case_id = str(
+        uuid.uuid5(uuid.NAMESPACE_URL, f"chorus:{expected_identity}")
+    )
+
+    promoted = client.post(f"/api/traces/{reference.trace_id}/promote", json={})
+
+    assert promoted.status_code == 200
+    assert promoted.json()["case_id"] == expected_case_id
+
+
 def test_deleted_eval_case_is_excluded_from_ui_and_runner_api(tmp_path):
     client, _sidecars, reference = _client_with_trace(tmp_path)
     promoted = client.post(
@@ -168,6 +250,7 @@ def test_deleted_eval_case_is_excluded_from_ui_and_runner_api(tmp_path):
     assert response.status_code == 200
     assert client.get("/api/datasets").json() == []
     assert client.get("/api/evals").json()["cases"] == []
+    assert client.get("/api/summary").json()["counts"]["eval_cases"] == 0
 
 
 def test_eval_suite_names_reject_path_separators(tmp_path):
