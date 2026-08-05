@@ -301,13 +301,14 @@ def load_evaluation_results(
     store: SidecarStore, run_id: str | None = None
 ) -> list[dict[str, Any]]:
     """Load the latest result rows, optionally restricted to one experiment."""
-    latest: dict[str, dict[str, Any]] = {}
+    latest: dict[tuple[str, str], dict[str, Any]] = {}
     for record in store.read("eval_results"):
-        if run_id is not None and str(record.get("run_id") or "") != run_id:
+        record_run_id = str(record.get("run_id") or "")
+        if run_id is not None and record_run_id != run_id:
             continue
         result_id = str(record.get("result_id") or "")
         if result_id:
-            latest[result_id] = record
+            latest[(record_run_id, result_id)] = record
     return list(latest.values())
 
 

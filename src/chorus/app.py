@@ -19,7 +19,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field, ValidationError
 from starlette.staticfiles import StaticFiles
 
-from abbrivio.deepeval import load_evaluation_cases
+from abbrivio.deepeval import load_evaluation_cases, load_evaluation_results
 from abbrivio.otlp import OtlpJsonlStore, create_otlp_router, encode_otlp_json
 from abbrivio.otlp.receiver import require_bearer_auth
 from abbrivio.sidecars import (
@@ -457,7 +457,7 @@ def create_app(
             ]
             feedback = sidecars.deduplicated("feedback", "feedback_id")
             eval_runs = sidecars.deduplicated("eval_runs", "run_id")
-            eval_results = sidecars.deduplicated("eval_results", "result_id")
+            eval_results = load_evaluation_results(sidecars)
             latencies = [float(row.get("latency_ms") or 0) for row in trace_views]
             costs_by_currency: Counter[str] = Counter()
             priced_calls = 0

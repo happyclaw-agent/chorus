@@ -233,12 +233,17 @@ def test_summary_counts_latest_append_only_evaluation_versions(tmp_path):
         "eval_results",
         {"run_id": "run-1", "result_id": "result-1", "status": "passed"},
     )
+    sidecars.append("eval_runs", {"run_id": "run-2", "passed": 1})
+    sidecars.append(
+        "eval_results",
+        {"run_id": "run-2", "result_id": "result-1", "status": "passed"},
+    )
     client = TestClient(create_app(tmp_path, sidecar_store=sidecars))
 
     summary = client.get("/api/summary").json()
 
-    assert summary["counts"]["eval_runs"] == 1
-    assert summary["counts"]["eval_results"] == 1
+    assert summary["counts"]["eval_runs"] == 2
+    assert summary["counts"]["eval_results"] == 2
     assert summary["latest_eval"]["passed"] == 1
 
 
