@@ -177,3 +177,25 @@ def test_export_persists_langsmith_style_results_per_example(tmp_path):
     assert results[0]["feedback"][0]["key"] == "Fitness Accountability"
     assert results[0]["trace"]["trace_id"] == "11" * 16
     assert load_evaluation_cases(store)[0]["attributes"]["dataset"] == "flex-quality"
+
+
+def test_invalid_result_batch_does_not_append_partial_experiment(tmp_path):
+    store = SidecarStore(tmp_path)
+
+    try:
+        export_deepeval_summary(
+            store,
+            {"run_id": "invalid-run", "dataset": "flex-quality", "total": 2},
+            results=[
+                {"example_id": "valid", "inputs": {"message": "hello"}},
+                {"example_id": "invalid", "inputs": ["not", "an", "object"]},
+            ],
+        )
+    except ValueError as error:
+        assert str(error) == "evaluation inputs and outputs must be objects"
+    else:
+        raise AssertionError("invalid result batch should fail")
+
+    assert store.read("eval_runs") == []
+    assert store.read("eval_cases") == []
+    assert store.read("eval_results") == []

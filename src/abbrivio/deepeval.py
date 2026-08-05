@@ -130,15 +130,19 @@ def export_deepeval_summary(
         or (str(summary["dataset"]) if summary.get("dataset") else None),
     )
     record = run.to_dict()
-    store.append("eval_runs", record)
-    if results is not None:
-        export_evaluation_results(
-            store,
+    prepared_results = (
+        _prepare_evaluation_results(
             run.run_id,
             results,
             source=source,
             dataset=run.dataset or "evaluation",
         )
+        if results is not None
+        else None
+    )
+    store.append("eval_runs", record)
+    if prepared_results is not None:
+        _append_evaluation_results(store, prepared_results)
     return record
 
 
@@ -165,7 +169,23 @@ def export_evaluation_results(
     dataset: str = "evaluation",
 ) -> list[dict[str, Any]]:
     """Persist application executions and evaluator feedback per dataset example."""
-    persisted: list[dict[str, Any]] = []
+    prepared = _prepare_evaluation_results(
+        run_id,
+        results,
+        source=source,
+        dataset=dataset,
+    )
+    return _append_evaluation_results(store, prepared)
+
+
+def _prepare_evaluation_results(
+    run_id: str,
+    results: Iterable[Mapping[str, Any]],
+    *,
+    source: str,
+    dataset: str,
+) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+    prepared: list[tuple[dict[str, Any], dict[str, Any]]] = []
     for position, value in enumerate(results):
         result = dict(value)
         result_id = str(
@@ -203,27 +223,32 @@ def export_evaluation_results(
             metadata={"source": source, **dict(result.get("metadata") or {})},
         )
         metadata = dict(result.get("metadata") or {})
-        store.append(
-            "eval_cases",
-            {
-                "schema_version": 1,
-                "case_id": example_id,
-                "name": str(metadata.get("name") or example_id),
-                "inputs": dict(inputs),
-                "reference_outputs": (
-                    dict(references) if references is not None else None
-                ),
-                "input_text": _primary_text(inputs),
-                "actual_output": None,
-                "expected_output": _primary_text(references),
-                "context": [str(item) for item in (metadata.get("context") or [])],
-                "source": str(metadata.get("example_source") or source),
-                "created_at": str(metadata.get("example_created_at") or utc_now()),
-                "tags": [str(item) for item in (metadata.get("tags") or [])],
-                "attributes": {**metadata, "dataset": result_dataset},
-            },
-        )
-        record = row.to_dict()
+        case_record = {
+            "schema_version": 1,
+            "case_id": example_id,
+            "name": str(metadata.get("name") or example_id),
+            "inputs": dict(inputs),
+            "reference_outputs": (dict(references) if references is not None else None),
+            "input_text": _primary_text(inputs),
+            "actual_output": None,
+            "expected_output": _primary_text(references),
+            "context": [str(item) for item in (metadata.get("context") or [])],
+            "source": str(metadata.get("example_source") or source),
+            "created_at": str(metadata.get("example_created_at") or utc_now()),
+            "tags": [str(item) for item in (metadata.get("tags") or [])],
+            "attributes": {**metadata, "dataset": result_dataset},
+        }
+        prepared.append((case_record, row.to_dict()))
+    return prepared
+
+
+def _append_evaluation_results(
+    store: SidecarStore,
+    prepared: Iterable[tuple[dict[str, Any], dict[str, Any]]],
+) -> list[dict[str, Any]]:
+    persisted: list[dict[str, Any]] = []
+    for case_record, record in prepared:
+        store.append("eval_cases", case_record)
         store.append("eval_results", record)
         persisted.append(record)
     return persisted
