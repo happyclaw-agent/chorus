@@ -385,7 +385,7 @@ function EvalCatalog({
                   ['Type', String(selectedDefinition.type ?? 'custom')],
                   ['Runner', selectedDefinition.runner ?? '—'],
                   ['Source', selectedDefinition.source ?? '—'],
-                  ['Dataset', String(selectedDefinition.dataset ?? latestRun?.dataset ?? '—')],
+                  ['Dataset', String(selectedDefinition.dataset ?? '—')],
                   ['Threshold', String(selectedDefinition.threshold ?? '—')],
                 ].map(([label, value]) => (
                   <div key={label} className="rounded-md border border-border bg-card px-3 py-2.5">
