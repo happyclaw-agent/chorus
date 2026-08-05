@@ -132,7 +132,13 @@ def export_deepeval_summary(
     record = run.to_dict()
     store.append("eval_runs", record)
     if results is not None:
-        export_evaluation_results(store, run.run_id, results, source=source)
+        export_evaluation_results(
+            store,
+            run.run_id,
+            results,
+            source=source,
+            dataset=run.dataset or "evaluation",
+        )
     return record
 
 
@@ -156,6 +162,7 @@ def export_evaluation_results(
     results: Iterable[Mapping[str, Any]],
     *,
     source: str = "evaluation",
+    dataset: str = "evaluation",
 ) -> list[dict[str, Any]]:
     """Persist application executions and evaluator feedback per dataset example."""
     persisted: list[dict[str, Any]] = []
@@ -166,7 +173,7 @@ def export_evaluation_results(
             or uuid.uuid5(uuid.NAMESPACE_URL, f"{run_id}:result:{position}")
         )
         example_id = str(result.get("example_id") or result_id)
-        dataset = str(result.get("dataset") or "evaluation")
+        result_dataset = str(result.get("dataset") or dataset)
         inputs = result.get("inputs") or {}
         outputs = result.get("outputs") or {}
         references = result.get("reference_outputs")
@@ -184,7 +191,7 @@ def export_evaluation_results(
             result_id=result_id,
             run_id=run_id,
             example_id=example_id,
-            dataset=dataset,
+            dataset=result_dataset,
             created_at=str(result.get("created_at") or utc_now()),
             status=str(result.get("status") or "unknown"),
             inputs=dict(inputs),
@@ -213,7 +220,7 @@ def export_evaluation_results(
                 "source": str(metadata.get("example_source") or source),
                 "created_at": str(metadata.get("example_created_at") or utc_now()),
                 "tags": [str(item) for item in (metadata.get("tags") or [])],
-                "attributes": {"dataset": dataset, **metadata},
+                "attributes": {**metadata, "dataset": result_dataset},
             },
         )
         record = row.to_dict()

@@ -262,7 +262,6 @@ export interface EvaluationOverview {
   catalog: EvalDefinition[];
   cases: Record<string, unknown>[];
   runs: Record<string, unknown>[];
-  results: Record<string, unknown>[];
 }
 
 export interface AgentStats {

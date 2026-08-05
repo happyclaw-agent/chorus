@@ -531,6 +531,108 @@ def test_eval_run_results_join_examples_feedback_and_otlp_usage(tmp_path):
     assert result["execution"]["latency_ms"] == 250
 
 
+def test_eval_result_span_selects_the_matching_root_execution(tmp_path):
+    trace_store = OtlpJsonlStore(tmp_path / "traces.otlp.jsonl")
+    sidecars = SidecarStore(tmp_path)
+    observer = AbbrivioCompletionObserver(OtlpJsonlSpanExporter(trace_store))
+    trace_id = "11" * 16
+    selected_root = "22" * 8
+    observer(
+        Observation(
+            trace_id=trace_id,
+            span_id=selected_root,
+            latency_ms=111,
+            input_tokens=10,
+            output_tokens=1,
+            total_tokens=11,
+        )
+    )
+    observer(
+        Observation(
+            trace_id=trace_id,
+            span_id="33" * 8,
+            latency_ms=333,
+            input_tokens=30,
+            output_tokens=3,
+            total_tokens=33,
+        )
+    )
+    sidecars.append(
+        "eval_runs",
+        EvaluationRun(
+            schema_version=1,
+            run_id="multi-root",
+            created_at=utc_now(),
+            source="deepeval",
+            model="model-a",
+            evaluator="judge-a",
+            passed=1,
+            failed=0,
+            total=1,
+            metrics={},
+            raw_summary={},
+            dataset="flex-quality",
+        ).to_dict(),
+    )
+    sidecars.append(
+        "eval_results",
+        {
+            "result_id": "result-1",
+            "run_id": "multi-root",
+            "example_id": "example-1",
+            "trace": {"trace_id": trace_id, "span_id": selected_root},
+        },
+    )
+    client = TestClient(
+        create_app(tmp_path, trace_store=trace_store, sidecar_store=sidecars)
+    )
+
+    execution = client.get("/api/eval-runs/multi-root/results").json()["results"][0][
+        "execution"
+    ]
+
+    assert execution["root_span_id"] == selected_root
+    assert execution["latency_ms"] == 111
+    assert execution["input_tokens"] == 10
+
+
+def test_eval_run_counts_latest_append_only_result_versions(tmp_path):
+    client, sidecars, _reference = _client_with_trace(tmp_path)
+    sidecars.append(
+        "eval_runs",
+        EvaluationRun(
+            schema_version=1,
+            run_id="retried-run",
+            created_at=utc_now(),
+            source="deepeval",
+            model="model-a",
+            evaluator="judge-a",
+            passed=1,
+            failed=0,
+            total=1,
+            metrics={},
+            raw_summary={},
+            dataset="flex-quality",
+        ).to_dict(),
+    )
+    result = {
+        "result_id": "result-1",
+        "run_id": "retried-run",
+        "example_id": "example-1",
+        "status": "failed",
+    }
+    sidecars.append("eval_results", result)
+    sidecars.append("eval_results", {**result, "status": "passed"})
+
+    run = client.get("/api/eval-runs").json()[0]
+    page = client.get("/api/eval-runs/retried-run/results").json()
+
+    assert run["result_count"] == 1
+    assert run["run_count"] == 1
+    assert page["total"] == 1
+    assert page["results"][0]["status"] == "passed"
+
+
 def test_eval_run_normalizes_nullable_evaluated_models(tmp_path):
     client, sidecars, _reference = _client_with_trace(tmp_path)
     sidecars.append(

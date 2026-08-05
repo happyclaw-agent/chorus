@@ -255,10 +255,19 @@ export const api = {
   /** GET /api/experiments — completed evaluation executions. */
   getExperiments: () => request<Experiment[]>('/experiments'),
   getEvalRuns: () => request<EvalRun[]>('/eval-runs'),
-  getEvalResults: (experimentId: string) =>
-    request<EvalResultPage>(`/eval-runs/${experimentId}/results`, {
-      params: { limit: 2000 },
-    }),
+  getEvalResults: async (experimentId: string) => {
+    const pageSize = 2000;
+    const results: EvalResultPage['results'] = [];
+    while (true) {
+      const page = await request<EvalResultPage>(`/eval-runs/${experimentId}/results`, {
+        params: { offset: results.length, limit: pageSize },
+      });
+      results.push(...page.results);
+      if (results.length >= page.total || page.results.length === 0) {
+        return { ...page, offset: 0, results };
+      }
+    }
+  },
   getEvaluationOverview: () => request<EvaluationOverview>('/evals'),
   getExperimentGrid: (experimentId: string) =>
     request<ExperimentGrid>(`/experiments/${experimentId}/grid`),

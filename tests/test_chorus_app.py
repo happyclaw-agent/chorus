@@ -218,6 +218,7 @@ def test_feedback_summary_is_raw_and_catalog_is_application_supplied(tmp_path):
     assert client.get("/api/evals").json()["catalog"] == [
         {"name": "example-quality", "group": "single_turn"}
     ]
+    assert "results" not in client.get("/api/evals").json()
 
 
 def test_trace_list_batches_and_scopes_sidecars_to_each_root(tmp_path, monkeypatch):

@@ -583,7 +583,6 @@ def create_app(
         return {
             "runs": runs,
             "cases": load_evaluation_cases(sidecars),
-            "results": sidecars.read("eval_results", limit=2000),
             "catalog": sidecars.latest("eval_catalog", "name"),
         }
 

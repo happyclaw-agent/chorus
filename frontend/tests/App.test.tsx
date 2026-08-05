@@ -113,6 +113,35 @@ describe('Corpus-wide run loading', () => {
   });
 });
 
+describe('Corpus-wide eval result loading', () => {
+  it('retrieves every result page instead of truncating large experiments', async () => {
+    const offsets: number[] = [];
+    server.use(
+      http.get('*/api/eval-runs/large-experiment/results', ({ request }) => {
+        const params = new URL(request.url).searchParams;
+        const offset = Number(params.get('offset') ?? 0);
+        offsets.push(offset);
+        const count = offset === 0 ? 2000 : 1;
+        return HttpResponse.json({
+          experiment_id: 'large-experiment',
+          total: 2001,
+          offset,
+          results: Array.from({ length: count }, (_, index) => ({
+            result_id: `result-${offset + index}`,
+          })),
+        });
+      })
+    );
+
+    await expect(api.getEvalResults('large-experiment')).resolves.toMatchObject({
+      total: 2001,
+      offset: 0,
+      results: expect.arrayContaining([{ result_id: 'result-2000' }]),
+    });
+    expect(offsets).toEqual([0, 2000]);
+  });
+});
+
 describe('Application base paths', () => {
   it('keeps the full notebook proxy prefix without overriding an injected base path', () => {
     expect(getBaseUrl('/notebook-sessions/session-1/ports/5173/traces', undefined)).toBe(

@@ -147,7 +147,6 @@ def test_export_persists_langsmith_style_results_per_example(tmp_path):
         results=[
             {
                 "example_id": "example-1",
-                "dataset": "flex-quality",
                 "status": "passed",
                 "inputs": {"message": "I am tired"},
                 "outputs": {"reply": "Take one small step."},
@@ -163,6 +162,7 @@ def test_export_persists_langsmith_style_results_per_example(tmp_path):
                     "trace_id": "11" * 16,
                     "span_id": "22" * 8,
                 },
+                "metadata": {"dataset": "must-not-override"},
             }
         ],
     )
@@ -172,6 +172,8 @@ def test_export_persists_langsmith_style_results_per_example(tmp_path):
     assert run["dataset"] == "flex-quality"
     assert len(results) == 1
     assert results[0]["example_id"] == "example-1"
+    assert results[0]["dataset"] == "flex-quality"
     assert results[0]["inputs"] == {"message": "I am tired"}
     assert results[0]["feedback"][0]["key"] == "Fitness Accountability"
     assert results[0]["trace"]["trace_id"] == "11" * 16
+    assert load_evaluation_cases(store)[0]["attributes"]["dataset"] == "flex-quality"

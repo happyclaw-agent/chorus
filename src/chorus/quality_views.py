@@ -888,11 +888,21 @@ class QualityView:
 
     def experiments(self) -> list[dict[str, Any]]:
         result_rows = self.sidecars.read("eval_results")
-        results_by_run: defaultdict[str, list[dict[str, Any]]] = defaultdict(list)
+        latest_results: dict[tuple[str, str], dict[str, Any]] = {}
+        unversioned_results: list[dict[str, Any]] = []
         for result in result_rows:
             run_id = str(result.get("run_id") or "")
-            if run_id:
-                results_by_run[run_id].append(result)
+            result_id = str(result.get("result_id") or "")
+            if not run_id:
+                continue
+            if result_id:
+                latest_results[(run_id, result_id)] = result
+            else:
+                unversioned_results.append(result)
+        results_by_run: defaultdict[str, list[dict[str, Any]]] = defaultdict(list)
+        for result in [*latest_results.values(), *unversioned_results]:
+            run_id = str(result.get("run_id") or "")
+            results_by_run[run_id].append(result)
         rows = []
         for run in reversed(self.sidecars.read("eval_runs")):
             run_id = str(run.get("run_id") or "")
@@ -950,21 +960,34 @@ class QualityView:
         executions_by_trace: defaultdict[str, list[dict[str, Any]]] = defaultdict(list)
         for execution in self._runs():
             executions_by_trace[str(execution.get("trace_id") or "")].append(execution)
+        span_ids_by_root: dict[tuple[str, str | None], set[str]] = {}
+        for trace_view in self.traces.trace_views():
+            trace_id = str(trace_view.get("trace_id") or "").lower()
+            root_span_id = str(trace_view.get("root_span_id") or "").lower() or None
+            span_ids_by_root[(trace_id, root_span_id)] = {
+                str(span.get("span_id") or "").lower()
+                for span in trace_view.get("spans") or []
+                if span.get("span_id")
+            }
 
         rows: list[dict[str, Any]] = []
         for record in latest.values():
             trace = record.get("trace") or {}
-            trace_id = str(trace.get("trace_id") or "")
-            root_span_id = str(trace.get("root_span_id") or "") or None
+            trace_id = str(trace.get("trace_id") or "").lower()
             candidates = executions_by_trace.get(trace_id, [])
             execution = next(
                 (
                     candidate
                     for candidate in candidates
-                    if root_span_id is None
-                    or candidate.get("root_span_id") == root_span_id
+                    if _sidecar_matches_root(
+                        record,
+                        root_span_id=candidate.get("root_span_id"),
+                        span_ids=span_ids_by_root.get(
+                            (trace_id, candidate.get("root_span_id")), set()
+                        ),
+                    )
                 ),
-                candidates[0] if candidates else None,
+                None,
             )
             rows.append(
                 {
