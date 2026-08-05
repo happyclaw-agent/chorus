@@ -692,6 +692,17 @@ def test_eval_result_aggregates_roots_under_missing_logical_parent(tmp_path):
     observer(
         Observation(
             trace_id=trace_id,
+            span_id="55" * 8,
+            parent_span_id="66" * 8,
+            latency_ms=444,
+            input_tokens=100,
+            output_tokens=10,
+            total_tokens=110,
+        )
+    )
+    observer(
+        Observation(
+            trace_id=trace_id,
             span_id="33" * 8,
             parent_span_id=logical_parent,
             latency_ms=333,
@@ -724,15 +735,23 @@ def test_eval_result_aggregates_roots_under_missing_logical_parent(tmp_path):
     execution = client.get("/api/eval-runs/fragmented-run/results").json()["results"][
         0
     ]["execution"]
-    trace = client.get(f"/api/ui/traces/{trace_id}").json()
+    trace = client.get(
+        f"/api/ui/traces/{trace_id}", params={"root_span_id": logical_parent}
+    ).json()
+    full_trace = client.get(f"/api/ui/traces/{trace_id}").json()
 
-    assert execution["root_span_id"] is None
+    assert execution["root_span_id"] == logical_parent
     assert execution["latency_ms"] == 333
     assert execution["input_tokens"] == 40
     assert execution["output_tokens"] == 4
     assert execution["cost_usd"] == 0.002
     assert trace["run"]["input_tokens"] == 40
     assert trace["spans"]["span_id"] == "synthetic-root"
+    assert {child["span_id"] for child in trace["spans"]["children"]} == {
+        "22" * 8,
+        "33" * 8,
+    }
+    assert full_trace["run"]["input_tokens"] == 140
 
 
 def test_eval_run_normalizes_nullable_evaluated_models(tmp_path):

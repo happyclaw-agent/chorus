@@ -533,7 +533,7 @@ class QualityView:
                 self.sidecars.read("content"),
                 _trace_meta(self.sidecars.read("trace_meta")),
             )
-        return next(
+        exact = next(
             (
                 row
                 for row in self._runs()
@@ -545,6 +545,16 @@ class QualityView:
             ),
             None,
         )
+        if exact is not None:
+            return exact
+        trace = self.trace_view(normalized, normalized_root)
+        if trace is None:
+            return None
+        return self._run(
+            trace,
+            self.sidecars.read("content"),
+            _trace_meta(self.sidecars.read("trace_meta")),
+        )
 
     def trace_view(
         self, trace_id: str, root_span_id: str | None = None
@@ -553,7 +563,7 @@ class QualityView:
         normalized_root = root_span_id.lower() if root_span_id else None
         if normalized_root is None:
             return self.traces.get_trace(normalized)
-        return next(
+        exact = next(
             (
                 trace
                 for trace in self.traces.trace_views()
@@ -565,6 +575,43 @@ class QualityView:
             ),
             None,
         )
+        if exact is not None:
+            return exact
+        logical_views: list[dict[str, Any]] = []
+        for trace in self.traces.trace_views():
+            if str(trace.get("trace_id") or "").lower() != normalized:
+                continue
+            root_id = str(trace.get("root_span_id") or "").lower()
+            root_span = next(
+                (
+                    span
+                    for span in trace.get("spans") or []
+                    if str(span.get("span_id") or "").lower() == root_id
+                ),
+                None,
+            )
+            if (
+                root_span is not None
+                and str(root_span.get("parent_span_id") or "").lower()
+                == normalized_root
+            ):
+                logical_views.append(trace)
+        if not logical_views:
+            return None
+        start = min(
+            int(trace.get("start_time_unix_nano") or 0) for trace in logical_views
+        )
+        end = max(int(trace.get("end_time_unix_nano") or 0) for trace in logical_views)
+        return {
+            **logical_views[0],
+            "root_span_id": normalized_root,
+            "start_time_unix_nano": start,
+            "end_time_unix_nano": end,
+            "latency_ms": (end - start) / 1_000_000,
+            "spans": [
+                span for trace in logical_views for span in trace.get("spans") or []
+            ],
+        }
 
     @staticmethod
     def span_tree(trace: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -1013,6 +1060,7 @@ class QualityView:
             candidates = executions_by_trace.get(trace_id, [])
 
             executions: list[dict[str, Any]] = []
+            logical_root_id: str | None = None
             for candidate in candidates:
                 candidate_root = candidate.get("root_span_id")
                 span_ids = span_ids_by_root.get((trace_id, candidate_root), set())
@@ -1035,6 +1083,12 @@ class QualityView:
                     if parent_id_by_root.get((trace_id, candidate.get("root_span_id")))
                     in logical_ids
                 ]
+                logical_parents = {
+                    parent_id_by_root.get((trace_id, candidate.get("root_span_id")))
+                    for candidate in executions
+                }
+                if len(logical_parents) == 1:
+                    logical_root_id = next(iter(logical_parents))
             if not executions and len(candidates) == 1:
                 executions = candidates
 
@@ -1048,7 +1102,7 @@ class QualityView:
                 ]
                 execution = {
                     "trace_id": trace_id,
-                    "root_span_id": None,
+                    "root_span_id": logical_root_id,
                     "latency_ms": (
                         max(end for _start, end in timings)
                         - min(start for start, _end in timings)
