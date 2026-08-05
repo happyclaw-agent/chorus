@@ -188,6 +188,23 @@ def test_promoted_trace_appears_as_an_eval_case(tmp_path):
     assert datasets[0]["examples"][0]["input"] == "Help me"
 
 
+def test_eval_case_preserves_an_explicitly_empty_expected_output(tmp_path):
+    client, _sidecars, reference = _client_with_trace(tmp_path)
+    promoted = client.post(
+        f"/api/traces/{reference.trace_id}/promote",
+        json={"attributes": {"dataset": "flex-golden"}},
+    ).json()
+
+    updated = client.put(
+        f"/api/datasets/flex-golden/examples/{promoted['case_id']}",
+        json={"expected": ""},
+    )
+
+    assert updated.status_code == 200
+    assert updated.json()["expected"] == ""
+    assert client.get("/api/datasets").json()[0]["examples"][0]["expected"] == ""
+
+
 def test_same_trace_can_be_promoted_into_multiple_eval_suites(tmp_path):
     client, _sidecars, reference = _client_with_trace(tmp_path)
 

@@ -865,8 +865,11 @@ class QualityView:
                         "example_id": record.get("case_id"),
                         "dataset": name,
                         "input": record.get("input_text"),
-                        "expected": record.get("expected_output")
-                        or record.get("actual_output"),
+                        "expected": (
+                            record.get("expected_output")
+                            if record.get("expected_output") is not None
+                            else record.get("actual_output")
+                        ),
                         "metadata": {
                             **(record.get("attributes") or {}),
                             "source_trace": (record.get("trace") or {}).get("trace_id"),
