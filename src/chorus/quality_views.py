@@ -994,6 +994,8 @@ class QualityView:
                 (candidate for candidate in candidates if matches_execution(candidate)),
                 None,
             )
+            if execution is None and len(candidates) == 1:
+                execution = candidates[0]
             rows.append(
                 {
                     **record,

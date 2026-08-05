@@ -637,6 +637,38 @@ def test_eval_run_counts_latest_append_only_result_versions(tmp_path):
     assert page["results"][0]["status"] == "passed"
 
 
+def test_eval_result_uses_only_root_when_logical_span_was_not_exported(tmp_path):
+    client, sidecars, reference = _client_with_trace(tmp_path)
+    sidecars.append(
+        "eval_runs",
+        {
+            "run_id": "logical-parent-run",
+            "source": "deepeval",
+            "total": 1,
+        },
+    )
+    sidecars.append(
+        "eval_results",
+        {
+            "result_id": "result-1",
+            "run_id": "logical-parent-run",
+            "example_id": "example-1",
+            "trace": {
+                "trace_id": reference.trace_id,
+                "span_id": "44" * 8,
+                "root_span_id": "44" * 8,
+            },
+        },
+    )
+
+    execution = client.get("/api/eval-runs/logical-parent-run/results").json()[
+        "results"
+    ][0]["execution"]
+
+    assert execution["root_span_id"] == reference.span_id
+    assert execution["input_tokens"] == 100
+
+
 def test_eval_run_normalizes_nullable_evaluated_models(tmp_path):
     client, sidecars, _reference = _client_with_trace(tmp_path)
     sidecars.append(
